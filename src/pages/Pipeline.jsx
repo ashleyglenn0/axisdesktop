@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  collection, getDocs, doc, updateDoc, addDoc,
+  collection, getDocs, doc, updateDoc, addDoc, deleteDoc,
   serverTimestamp, query, orderBy,
 } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
@@ -344,6 +344,18 @@ export default function Pipeline() {
   const [showReject,  setShowReject]  = useState(false);
   const [toast,       setToast]       = useState(null);
 
+  // ── Client Portal state ───────────────────────────────────────────────────
+  const [invoices,      setInvoices]      = useState([]);
+  const [newInvoice,    setNewInvoice]    = useState({ label: "", amount: "", due_date: "", status: "draft" });
+  const [addingInvoice, setAddingInvoice] = useState(false);
+  const [savingInvoice, setSavingInvoice] = useState(false);
+  const [branding,      setBranding]      = useState({ logo_url: "", primary_hex: "", secondary_hex: "" });
+  const [editBranding,  setEditBranding]  = useState(false);
+  const [brandingDraft, setBrandingDraft] = useState({});
+  const [savingBrand,   setSavingBrand]   = useState(false);
+  const [inviteSent,    setInviteSent]    = useState(false);
+  const [sendingInvite, setSendingInvite] = useState(false);
+
   useEffect(() => { load(); }, []);
 
   const load = async () => {
@@ -363,7 +375,66 @@ export default function Pipeline() {
     setFormData(item.stage_data || {});
     setMatrixViewed(false);
     setDirty(false);
+    // Load portal data
+    setBranding(item.branding || { logo_url: "", primary_hex: "", secondary_hex: "" });
+    setBrandingDraft(item.branding || { logo_url: "", primary_hex: "", secondary_hex: "" });
+    setInviteSent(!!item.portal_invite_sent);
+    loadInvoices(item.id);
   };
+
+  const loadInvoices = async (clientId) => {
+    const snap = await getDocs(collection(db, "pipeline", clientId, "invoices"));
+    setInvoices(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "")));
+  };
+
+  const addInvoice = async () => {
+    if (!newInvoice.label.trim() || !newInvoice.amount) return;
+    setSavingInvoice(true);
+    await addDoc(collection(db, "pipeline", selected.id, "invoices"), {
+      ...newInvoice,
+      amount: parseFloat(newInvoice.amount),
+      created_at: new Date().toISOString(),
+    });
+    await loadInvoices(selected.id);
+    setNewInvoice({ label: "", amount: "", due_date: "", status: "draft" });
+    setAddingInvoice(false);
+    setSavingInvoice(false);
+  };
+
+  const updateInvoiceStatus = async (invoiceId, status) => {
+    await updateDoc(doc(db, "pipeline", selected.id, "invoices", invoiceId), { status });
+    setInvoices(prev => prev.map(i => i.id === invoiceId ? { ...i, status } : i));
+  };
+
+  const deleteInvoice = async (invoiceId) => {
+    await deleteDoc(doc(db, "pipeline", selected.id, "invoices", invoiceId));
+    setInvoices(prev => prev.filter(i => i.id !== invoiceId));
+  };
+
+  const saveBranding = async () => {
+    setSavingBrand(true);
+    await updateDoc(doc(db, "pipeline", selected.id), { branding: brandingDraft });
+    setBranding(brandingDraft);
+    setSelected(prev => ({ ...prev, branding: brandingDraft }));
+    setEditBranding(false);
+    setSavingBrand(false);
+  };
+
+  const sendPortalInvite = async () => {
+    if (!selected.contact_email && !selected.email) return;
+    setSendingInvite(true);
+    await updateDoc(doc(db, "pipeline", selected.id), {
+      portal_invite_sent: true,
+      portal_invite_date: new Date().toISOString(),
+      portal_client_id: selected.id,
+    });
+    setInviteSent(true);
+    setSelected(prev => ({ ...prev, portal_invite_sent: true }));
+    setSendingInvite(false);
+    showToast("Invite flagged — send login link to client");
+  };
+
+
 
   const updateField = (key, value) => {
     setFormData(prev => ({ ...prev, [key]: value }));
@@ -890,6 +961,151 @@ export default function Pipeline() {
               {renderStageForm()}
               {renderStageAction()}
             </Card>
+
+            {/* ── Client Portal ─────────────────────────────────────────── */}
+            <div style={{ marginTop: 24 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Client Portal</div>
+
+              {/* Branding */}
+              <Card style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: theme.text }}>Branding</div>
+                  {!editBranding
+                    ? <button onClick={() => { setEditBranding(true); setBrandingDraft(branding); }} style={{ fontSize: 11, color: theme.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0 }}>Edit</button>
+                    : <div style={{ display: "flex", gap: 6 }}>
+                        <Button size="sm" onClick={saveBranding} disabled={savingBrand}>{savingBrand ? "Saving…" : "Save"}</Button>
+                        <Button size="sm" variant="outline" onClick={() => setEditBranding(false)}>Cancel</Button>
+                      </div>
+                  }
+                </div>
+                {editBranding ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <input value={brandingDraft.logo_url || ""} onChange={e => setBrandingDraft(p => ({ ...p, logo_url: e.target.value }))}
+                      placeholder="Logo URL (Drive or hosted link)"
+                      style={{ padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 10, color: theme.textMuted, marginBottom: 3 }}>Primary Hex</div>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <input type="color" value={brandingDraft.primary_hex || "#000000"} onChange={e => setBrandingDraft(p => ({ ...p, primary_hex: e.target.value }))}
+                            style={{ width: 32, height: 32, borderRadius: 6, border: `1px solid ${theme.border}`, cursor: "pointer", padding: 2 }} />
+                          <input value={brandingDraft.primary_hex || ""} onChange={e => setBrandingDraft(p => ({ ...p, primary_hex: e.target.value }))}
+                            placeholder="#000000" style={{ flex: 1, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
+                        </div>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 10, color: theme.textMuted, marginBottom: 3 }}>Secondary Hex</div>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <input type="color" value={brandingDraft.secondary_hex || "#000000"} onChange={e => setBrandingDraft(p => ({ ...p, secondary_hex: e.target.value }))}
+                            style={{ width: 32, height: 32, borderRadius: 6, border: `1px solid ${theme.border}`, cursor: "pointer", padding: 2 }} />
+                          <input value={brandingDraft.secondary_hex || ""} onChange={e => setBrandingDraft(p => ({ ...p, secondary_hex: e.target.value }))}
+                            placeholder="#000000" style={{ flex: 1, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+                    {branding.logo_url
+                      ? <img src={branding.logo_url} alt="logo" style={{ height: 32, objectFit: "contain", borderRadius: 4 }} onError={e => { e.target.style.display = "none"; }} />
+                      : <div style={{ fontSize: 12, color: theme.textMuted }}>No logo set</div>
+                    }
+                    {branding.primary_hex && (
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <div style={{ width: 16, height: 16, borderRadius: 3, background: branding.primary_hex, border: `1px solid ${theme.border}` }} />
+                        <span style={{ fontSize: 11, color: theme.textMuted }}>{branding.primary_hex}</span>
+                      </div>
+                    )}
+                    {branding.secondary_hex && (
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <div style={{ width: 16, height: 16, borderRadius: 3, background: branding.secondary_hex, border: `1px solid ${theme.border}` }} />
+                        <span style={{ fontSize: 11, color: theme.textMuted }}>{branding.secondary_hex}</span>
+                      </div>
+                    )}
+                    {!branding.primary_hex && !branding.secondary_hex && !branding.logo_url && (
+                      <div style={{ fontSize: 12, color: theme.textMuted }}>No branding set — click Edit to add</div>
+                    )}
+                  </div>
+                )}
+              </Card>
+
+              {/* Invoices */}
+              <Card style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: theme.text }}>Invoices</div>
+                  <button onClick={() => setAddingInvoice(v => !v)}
+                    style={{ fontSize: 11, fontWeight: 700, color: theme.primary, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                    {addingInvoice ? "Cancel" : "+ Add"}
+                  </button>
+                </div>
+
+                {invoices.length === 0 && !addingInvoice && (
+                  <div style={{ fontSize: 12, color: theme.textMuted }}>No invoices yet.</div>
+                )}
+
+                {invoices.map(inv => {
+                  const statusColors = { draft: theme.textMuted, sent: "#2563eb", paid: "#2d7a46", overdue: theme.danger };
+                  return (
+                    <div key={inv.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: `1px solid ${theme.border}` }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: theme.text }}>{inv.label}</div>
+                        <div style={{ fontSize: 11, color: theme.textMuted }}>{inv.due_date ? `Due ${inv.due_date}` : "No due date"}</div>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: theme.primary }}>${parseFloat(inv.amount || 0).toLocaleString()}</div>
+                      <select value={inv.status} onChange={e => updateInvoiceStatus(inv.id, e.target.value)}
+                        style={{ fontSize: 11, fontWeight: 700, color: statusColors[inv.status] || theme.textMuted, border: `1px solid ${theme.border}`, borderRadius: 6, padding: "3px 6px", background: "#fff", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", outline: "none" }}>
+                        {["draft","sent","paid","overdue"].map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+                      </select>
+                      <button onClick={() => deleteInvoice(inv.id)} style={{ fontSize: 14, color: theme.textMuted, background: "none", border: "none", cursor: "pointer", padding: "0 2px", lineHeight: 1 }}>×</button>
+                    </div>
+                  );
+                })}
+
+                {addingInvoice && (
+                  <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                    <input value={newInvoice.label} onChange={e => setNewInvoice(p => ({ ...p, label: e.target.value }))}
+                      placeholder="Invoice label (e.g. Deposit — RenderATL 2025)"
+                      style={{ padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input type="number" value={newInvoice.amount} onChange={e => setNewInvoice(p => ({ ...p, amount: e.target.value }))}
+                        placeholder="Amount ($)"
+                        style={{ flex: 1, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
+                      <input type="date" value={newInvoice.due_date} onChange={e => setNewInvoice(p => ({ ...p, due_date: e.target.value }))}
+                        style={{ flex: 1, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
+                    </div>
+                    <select value={newInvoice.status} onChange={e => setNewInvoice(p => ({ ...p, status: e.target.value }))}
+                      style={{ padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }}>
+                      {["draft","sent","paid","overdue"].map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+                    </select>
+                    <Button size="sm" onClick={addInvoice} disabled={!newInvoice.label.trim() || !newInvoice.amount || savingInvoice}>
+                      {savingInvoice ? "Saving…" : "Save Invoice"}
+                    </Button>
+                  </div>
+                )}
+              </Card>
+
+              {/* Portal Invite */}
+              <Card>
+                <div style={{ fontSize: 12, fontWeight: 700, color: theme.text, marginBottom: 8 }}>Portal Access</div>
+                {inviteSent ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ fontSize: 12, color: "#2d7a46", fontWeight: 600 }}>✓ Invite sent</div>
+                    {selected.portal_invite_date && (
+                      <div style={{ fontSize: 11, color: theme.textMuted }}>{new Date(selected.portal_invite_date).toLocaleDateString()}</div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <Button size="sm" onClick={sendPortalInvite} disabled={sendingInvite || (!selected.contact_email && !selected.email)}>
+                      {sendingInvite ? "Sending…" : "Send Portal Invite"}
+                    </Button>
+                    <div style={{ fontSize: 11, color: theme.textMuted }}>
+                      {(!selected.contact_email && !selected.email) ? "No contact email on record" : `Will invite ${selected.contact_email || selected.email}`}
+                    </div>
+                  </div>
+                )}
+              </Card>
+            </div>
 
           </div>
         )}

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, getDoc, updateDoc, collection, getDocs, setDoc, deleteDoc, addDoc, query, where } from "firebase/firestore";
+import { doc, getDoc, updateDoc, collection, getDocs, setDoc, deleteDoc, addDoc, query, where, writeBatch } from "firebase/firestore";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import { db } from "../firebase";
 import { useAuth } from "../hooks/useAuth";
 import { theme } from "../theme";
@@ -348,16 +350,70 @@ function StaffList({ staffProfiles, staffFilter, staffExpanded, setStaffExpanded
   });
 }
 
+const FOUNDERS = ["Ashley", "Mikal"];
+
+// ── DATA RETENTION CONFIG ─────────────────────────────────────────────────────
+// Change this number when Reba confirms the retention window
+const DATA_RETENTION_DAYS = 120;
+
+const isRetentionExpired = (eventDate) => {
+  if (!eventDate) return false;
+  const event = new Date(eventDate);
+  const now   = new Date();
+  const diffDays = (now - event) / (1000 * 60 * 60 * 24);
+  return diffDays >= DATA_RETENTION_DAYS;
+};
+
+// What gets anonymized vs deleted per record type
+// Update this map when Reba confirms specifics
+const ANONYMIZATION_MAP = {
+  roster: {
+    anonymize: ["name", "email", "phone"],
+    delete:    ["photo_url", "shirt_size", "emergency_contact", "device_token"],
+    keep:      ["role", "shift", "zone", "type", "checked_in"],
+  },
+  check_ins: {
+    anonymize: ["name", "userId", "uid"],
+    delete:    [],
+    keep:      ["timestamp", "zone", "role", "eventId", "type"],
+  },
+  check_outs: {
+    anonymize: ["name", "userId", "uid"],
+    delete:    [],
+    keep:      ["timestamp", "zone", "role", "eventId", "type"],
+  },
+  incident_reports: {
+    anonymize: ["name", "uid"],
+    delete:    ["allowContact"],
+    keep:      ["category", "severity", "description", "actionTaken", "location", "zone", "status", "resolvedBy", "resolvedAt", "createdAt"],
+  },
+  volunteerProfiles: {
+    anonymize: ["firstName", "lastName", "email", "phone", "uid"],
+    delete:    ["photo_url", "device_token"],
+    keep:      ["score", "tlTier", "isTeamLead", "isOpsLead", "zone", "event"],
+  },
+};
+
+const anonymizeRecord = (data, map) => {
+  const result = { ...data };
+  (map.delete    || []).forEach(f => delete result[f]);
+  (map.anonymize || []).forEach(f => { if (result[f]) result[f] = "[anonymized]"; });
+  return result;
+};
+
 export default function EventCommand() {
   const { eventId } = useParams();
   const { activeUser } = useAuth();
   const navigate = useNavigate();
+  const isFounder = FOUNDERS.includes(activeUser);
 
   const [event,   setEvent]   = useState(null);
   const [roster,  setRoster]  = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
   const [checklist, setChecklist] = useState({});
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting,        setDeleting]        = useState(false);
   const [newDoc,    setNewDoc]    = useState({ label: "", url: "" });
   const [debrief,   setDebrief]   = useState("");
 
@@ -377,6 +433,31 @@ export default function EventCommand() {
   // Drive docs
   const [driveDocs,     setDriveDocs]     = useState([]);
   const [driveLoading,  setDriveLoading]  = useState(false);
+  const [deliverables,  setDeliverables]  = useState({ folder_url: "", status: "pending", notified_at: null }); // status: pending | ready | notified
+  const [editingDeliv,  setEditingDeliv]  = useState(false);
+  const [delivFolderDraft, setDelivFolderDraft] = useState("");
+  const [savingDeliv,   setSavingDeliv]   = useState(false);
+
+  // Shifts
+  const [shifts,       setShifts]       = useState([]);
+  const [shiftsLoading,setShiftsLoading]= useState(false);
+  const [newShift,     setNewShift]     = useState({
+    name: "", zone: "", start_time: "", end_time: "", capacity: "", role_type: ""
+  });
+  const [shiftSaving,  setShiftSaving]  = useState(false);
+
+  // Reports
+  const [activeReport,   setActiveReport]   = useState(null);
+  const [reportData,     setReportData]     = useState([]);
+  const [reportLoading,  setReportLoading]  = useState(false);
+  const [exportingPDF,   setExportingPDF]   = useState(false);
+
+  // Data deletion requests
+  const [deletionRequests,     setDeletionRequests]     = useState([]);
+  const [deletionLoading,      setDeletionLoading]      = useState(false);
+  const [fulfillingSaving,     setFulfillingSaving]     = useState(null); // id of request being fulfilled
+  const [denyingId,            setDenyingId]            = useState(null);
+  const [denyReason,           setDenyReason]           = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -394,6 +475,13 @@ export default function EventCommand() {
         if (data.drive_folder_url) {
           loadDriveDocs(data.drive_folder_url);
         }
+        // Load deliverables
+        if (data.deliverables) {
+          setDeliverables(data.deliverables);
+          setDelivFolderDraft(data.deliverables.folder_url || "");
+        }
+        // Load any pending deletion requests for this event
+        loadDeletionRequests();
       }
       setRoster(rosterSnap.docs.map(d => ({ id: d.id, ...d.data() })));
       setClientStaff(clientStaffSnap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -469,9 +557,223 @@ export default function EventCommand() {
     setStaffLoading(false);
   };
 
+  const loadShifts = async () => {
+    if (shifts.length > 0) return;
+    setShiftsLoading(true);
+    const snap = await getDocs(collection(db, "events", eventId, "shifts"));
+    setShifts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    setShiftsLoading(false);
+  };
+
+  // ── REPORTS ENGINE ──────────────────────────────────────────────────────────
+  const REPORTS = [
+    { key: "checkins",       label: "Check-Ins",               icon: "✅" },
+    { key: "checkouts",      label: "Check-Outs",              icon: "🚪" },
+    { key: "noshows",        label: "No Shows",                icon: "❌" },
+    { key: "roster_vol",     label: "Volunteer Roster",        icon: "👥" },
+    { key: "roster_con",     label: "Contractor Roster",       icon: "🏷️" },
+    { key: "tl_performance", label: "Team Lead Performance",   icon: "⭐" },
+    { key: "ol_performance", label: "Ops Lead Performance",    icon: "🏆" },
+    { key: "incidents",      label: "Incident Reports",        icon: "⚠️" },
+    { key: "attendance",     label: "Attendance Summary",      icon: "📊" },
+    { key: "summary",        label: "Overall Summary",         icon: "📋" },
+  ];
+
+  const loadReport = async (key) => {
+    setActiveReport(key);
+    setReportLoading(true);
+    setReportData([]);
+    try {
+      let rows = [];
+      if (key === "checkins") {
+        const snap = await getDocs(query(collection(db, "check_ins"), where("eventId", "==", eventId)));
+        rows = snap.docs.map(d => {
+          const r = d.data();
+          return { Name: r.name || r.userId || "—", Role: r.role || "—", "Check-In Time": r.timestamp ? new Date(r.timestamp?.toDate ? r.timestamp.toDate() : r.timestamp).toLocaleString() : "—", Zone: r.zone || "—", Type: r.type || "volunteer" };
+        });
+      } else if (key === "checkouts") {
+        const snap = await getDocs(query(collection(db, "check_outs"), where("eventId", "==", eventId)));
+        rows = snap.docs.map(d => {
+          const r = d.data();
+          return { Name: r.name || r.userId || "—", Role: r.role || "—", "Check-Out Time": r.timestamp ? new Date(r.timestamp?.toDate ? r.timestamp.toDate() : r.timestamp).toLocaleString() : "—", Zone: r.zone || "—", Type: r.type || "volunteer" };
+        });
+      } else if (key === "noshows") {
+        const [rosterSnap, checkInSnap] = await Promise.all([
+          getDocs(collection(db, "events", eventId, "roster")),
+          getDocs(query(collection(db, "check_ins"), where("eventId", "==", eventId))),
+        ]);
+        const checkedInIds = new Set(checkInSnap.docs.map(d => d.data().userId || d.data().uid));
+        rows = rosterSnap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .filter(r => !checkedInIds.has(r.uid || r.id))
+          .map(r => ({ Name: r.name || "—", Role: r.role || "—", Type: r.type || "volunteer", "Shift": r.shift || "—" }));
+      } else if (key === "roster_vol") {
+        const snap = await getDocs(collection(db, "events", eventId, "roster"));
+        rows = snap.docs
+          .map(d => d.data())
+          .filter(r => (r.type || "volunteer") === "volunteer")
+          .map(r => ({ Name: r.name || "—", Role: r.role || "—", Shift: r.shift || "—", "Check-In": r.checked_in ? "Yes" : "No", "T-Shirt": r.shirt_size || "—" }));
+      } else if (key === "roster_con") {
+        const snap = await getDocs(collection(db, "events", eventId, "roster"));
+        rows = snap.docs
+          .map(d => d.data())
+          .filter(r => r.type === "contractor")
+          .map(r => ({ Name: r.name || "—", Role: r.role || "—", "Engagement Window": r.engagement_window || "—", Zone: r.zone || "—", "Rate": r.rate || "—" }));
+      } else if (key === "tl_performance") {
+        const snap = await getDocs(query(collection(db, "volunteerProfiles"), where("event", "==", eventId)));
+        rows = snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .filter(r => r.isTeamLead && !r.isOpsLead)
+          .map(r => {
+            const { score, tlTier } = calculateLeadershipScore(r);
+            return { Name: r.firstName ? `${r.firstName} ${r.lastName || ""}`.trim() : "—", Zone: r.zone || "—", Score: score, Tier: tlTier.label, "Promoted By": r.promotedBy || "—" };
+          });
+      } else if (key === "ol_performance") {
+        const snap = await getDocs(query(collection(db, "volunteerProfiles"), where("event", "==", eventId)));
+        rows = snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .filter(r => r.isOpsLead)
+          .map(r => {
+            const { score } = calculateLeadershipScore(r);
+            return { Name: r.firstName ? `${r.firstName} ${r.lastName || ""}`.trim() : "—", Score: score, "Promoted By": r.promotedBy || "—", "Promoted At": r.promotedAt ? new Date(r.promotedAt).toLocaleString() : "—" };
+          });
+      } else if (key === "incidents") {
+        const snap = await getDocs(query(collection(db, "incident_reports"), where("event", "==", event.event_nickname || event.name)));
+        rows = snap.docs.map(d => {
+          const r = d.data();
+          return {
+            "Reported By": r.name || "—",
+            Role: r.reporterRole || "—",
+            Category: r.category || "—",
+            Severity: r.severity || "—",
+            Zone: r.zone || "—",
+            Location: r.location || "—",
+            Description: r.description || "—",
+            "Action Taken": r.actionTaken || "—",
+            Witnesses: r.witnesses || "—",
+            Status: r.status || "open",
+            "Resolved By": r.resolvedBy || "—",
+            "Resolved At": r.resolvedAt ? new Date(r.resolvedAt.toDate ? r.resolvedAt.toDate() : r.resolvedAt).toLocaleString() : "—",
+            "Allow Contact": r.allowContact ? "Yes" : "No",
+            "Filed At": r.createdAt ? new Date(r.createdAt.toDate ? r.createdAt.toDate() : r.createdAt).toLocaleString() : "—",
+          };
+        });
+      } else if (key === "attendance") {
+        const [rosterSnap, checkInSnap, checkOutSnap] = await Promise.all([
+          getDocs(collection(db, "events", eventId, "roster")),
+          getDocs(query(collection(db, "check_ins"),  where("eventId", "==", eventId))),
+          getDocs(query(collection(db, "check_outs"), where("eventId", "==", eventId))),
+        ]);
+        const registered = rosterSnap.docs.length;
+        const checkedIn  = checkInSnap.docs.length;
+        const checkedOut = checkOutSnap.docs.length;
+        const noShows    = registered - checkedIn;
+        rows = [
+          { Metric: "Registered",    Count: registered, "% of Registered": "100%" },
+          { Metric: "Checked In",    Count: checkedIn,  "% of Registered": registered > 0 ? `${Math.round((checkedIn/registered)*100)}%` : "—" },
+          { Metric: "Checked Out",   Count: checkedOut, "% of Registered": registered > 0 ? `${Math.round((checkedOut/registered)*100)}%` : "—" },
+          { Metric: "No Shows",      Count: noShows > 0 ? noShows : 0, "% of Registered": registered > 0 ? `${Math.round((Math.max(0,noShows)/registered)*100)}%` : "—" },
+        ];
+      } else if (key === "summary") {
+        const [rosterSnap, checkInSnap, checkOutSnap, incidentSnap, shiftSnap] = await Promise.all([
+          getDocs(collection(db, "events", eventId, "roster")),
+          getDocs(query(collection(db, "check_ins"),  where("eventId", "==", eventId))),
+          getDocs(query(collection(db, "check_outs"), where("eventId", "==", eventId))),
+          getDocs(query(collection(db, "incident_reports"), where("event", "==", event.event_nickname || event.name))),
+          getDocs(collection(db, "events", eventId, "shifts")),
+        ]);
+        const rosterData  = rosterSnap.docs.map(d => d.data());
+        const volunteers  = rosterData.filter(r => (r.type || "volunteer") === "volunteer").length;
+        const contractors = rosterData.filter(r => r.type === "contractor").length;
+        rows = [
+          { Category: "Staff",        Metric: "Total Rostered",      Value: rosterSnap.docs.length },
+          { Category: "Staff",        Metric: "Volunteers",          Value: volunteers },
+          { Category: "Staff",        Metric: "Contractors",         Value: contractors },
+          { Category: "Attendance",   Metric: "Total Check-Ins",     Value: checkInSnap.docs.length },
+          { Category: "Attendance",   Metric: "Total Check-Outs",    Value: checkOutSnap.docs.length },
+          { Category: "Attendance",   Metric: "No Shows",            Value: Math.max(0, rosterSnap.docs.length - checkInSnap.docs.length) },
+          { Category: "Operations",   Metric: "Shifts Created",      Value: shiftSnap.docs.length },
+          { Category: "Operations",   Metric: "Incidents Filed",     Value: incidentSnap.docs.length },
+          { Category: "Completion",   Metric: "Checklist Progress",  Value: `${doneItems}/${totalItems} (${pct}%)` },
+        ];
+      }
+      setReportData(rows);
+    } catch (e) {
+      console.error("Report error:", e);
+      setReportData([]);
+    }
+    setReportLoading(false);
+  };
+
+  const exportPDF = () => {
+    if (!reportData.length || !activeReport) return;
+    setExportingPDF(true);
+    const reportMeta = REPORTS.find(r => r.key === activeReport);
+    const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+
+    // Header
+    pdf.setFillColor(28, 74, 54);
+    pdf.rect(0, 0, pdf.internal.pageSize.width, 56, "F");
+    pdf.setTextColor(201, 160, 48);
+    pdf.setFontSize(10);
+    pdf.text("MOTION & METHOD  ·  M&M OPERATIONS", 40, 20);
+    pdf.setTextColor(255, 255, 255);
+    pdf.setFontSize(18);
+    pdf.text(`${reportMeta?.icon || ""} ${reportMeta?.label || activeReport}`, 40, 42);
+    pdf.setFontSize(10);
+    pdf.text(`${event.event_nickname || event.name}  ·  ${event.client}  ·  ${event.event_date || ""}`, pdf.internal.pageSize.width - 40, 42, { align: "right" });
+
+    // Table
+    const headers = Object.keys(reportData[0]);
+    const rows    = reportData.map(r => headers.map(h => String(r[h] ?? "—")));
+    autoTable(pdf, {
+      head: [headers],
+      body: rows,
+      startY: 70,
+      styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
+      headStyles: { fillColor: [28, 74, 54], textColor: [255,255,255], fontStyle: "bold" },
+      alternateRowStyles: { fillColor: [247, 247, 245] },
+      margin: { left: 40, right: 40 },
+    });
+
+    // Footer
+    const pageCount = pdf.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      pdf.setPage(i);
+      pdf.setFontSize(8);
+      pdf.setTextColor(150);
+      pdf.text(`Generated ${new Date().toLocaleString()}  ·  Page ${i} of ${pageCount}`, 40, pdf.internal.pageSize.height - 20);
+    }
+
+    pdf.save(`MM_${activeReport}_${event.event_nickname || event.name}_${new Date().toISOString().slice(0,10)}.pdf`);
+    setExportingPDF(false);
+  };
+
   const handleTabChange = (tab) => {
     setActiveTab(tab);
-    if (tab === "staff") loadStaffProfiles();
+    if (tab === "staff")   loadStaffProfiles();
+    if (tab === "shifts")  loadShifts();
+    if (tab === "reports") { setActiveReport(null); setReportData([]); }
+  };
+
+  const addShift = async () => {
+    if (!newShift.name.trim() || !newShift.start_time || !newShift.end_time) return;
+    setShiftSaving(true);
+    const ref = await addDoc(collection(db, "events", eventId, "shifts"), {
+      ...newShift,
+      capacity: parseInt(newShift.capacity) || 0,
+      assigned: [],
+      created_by: activeUser,
+      created_at: new Date().toISOString(),
+    });
+    setShifts(prev => [...prev, { id: ref.id, ...newShift, capacity: parseInt(newShift.capacity) || 0, assigned: [] }]);
+    setNewShift({ name: "", zone: "", start_time: "", end_time: "", capacity: "", role_type: "" });
+    setShiftSaving(false);
+  };
+
+  const deleteShift = async (shiftId) => {
+    await deleteDoc(doc(db, "events", eventId, "shifts", shiftId));
+    setShifts(prev => prev.filter(s => s.id !== shiftId));
   };
 
   const promoteRole = async (profileId, uid, role) => {
@@ -530,6 +832,23 @@ export default function EventCommand() {
     setSaving(false);
   };
 
+  const saveDeliverables = async () => {
+    if (!delivFolderDraft.trim()) return;
+    setSavingDeliv(true);
+    const updated = { ...deliverables, folder_url: delivFolderDraft.trim(), status: deliverables.status === "pending" ? "ready" : deliverables.status };
+    await updateDoc(doc(db, "events", eventId), { deliverables: updated });
+    setDeliverables(updated);
+    setEditingDeliv(false);
+    setSavingDeliv(false);
+  };
+
+  const notifyClientDeliverables = async () => {
+    if (!deliverables.folder_url || deliverables.status !== "ready") return;
+    const updated = { ...deliverables, status: "notified", notified_at: new Date().toISOString() };
+    await updateDoc(doc(db, "events", eventId), { deliverables: updated });
+    setDeliverables(updated);
+  };
+
   const addEventDoc = async () => {
     if (!newDoc.label.trim()) return;
     const docs = [...(event.docs || []), { ...newDoc, added_by: activeUser, added_at: new Date().toISOString() }];
@@ -540,10 +859,135 @@ export default function EventCommand() {
     setSaving(false);
   };
 
+  // ── DATA DELETION ────────────────────────────────────────────────────────────
+  const loadDeletionRequests = async () => {
+    setDeletionLoading(true);
+    const snap = await getDocs(query(
+      collection(db, "data_deletion_requests"),
+      where("eventId", "==", eventId)
+    ));
+    setDeletionRequests(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    setDeletionLoading(false);
+  };
+
+  const fulfillRequest = async (request) => {
+    setFulfillingSaving(request.id);
+    try {
+      const uid       = request.uid;
+      const eventName = event.event_nickname || event.name;
+      const batch     = writeBatch(db);
+
+      // 1. Anonymize roster entry
+      const rosterSnap = await getDocs(query(
+        collection(db, "events", eventId, "roster"),
+        where("uid", "==", uid)
+      ));
+      rosterSnap.docs.forEach(d => {
+        batch.update(d.ref, anonymizeRecord(d.data(), ANONYMIZATION_MAP.roster));
+      });
+
+      // 2. Anonymize check-ins
+      const ciSnap = await getDocs(query(
+        collection(db, "check_ins"),
+        where("eventId", "==", eventId),
+        where("uid", "==", uid)
+      ));
+      ciSnap.docs.forEach(d => {
+        batch.update(d.ref, anonymizeRecord(d.data(), ANONYMIZATION_MAP.check_ins));
+      });
+
+      // 3. Anonymize check-outs
+      const coSnap = await getDocs(query(
+        collection(db, "check_outs"),
+        where("eventId", "==", eventId),
+        where("uid", "==", uid)
+      ));
+      coSnap.docs.forEach(d => {
+        batch.update(d.ref, anonymizeRecord(d.data(), ANONYMIZATION_MAP.check_outs));
+      });
+
+      // 4. Anonymize incident reports
+      const irSnap = await getDocs(query(
+        collection(db, "incident_reports"),
+        where("event", "==", eventName),
+        where("uid", "==", uid)
+      ));
+      irSnap.docs.forEach(d => {
+        batch.update(d.ref, anonymizeRecord(d.data(), ANONYMIZATION_MAP.incident_reports));
+      });
+
+      // 5. Anonymize volunteer profile
+      const vpRef = doc(db, "volunteerProfiles", uid);
+      const vpSnap = await getDoc(vpRef);
+      if (vpSnap.exists()) {
+        batch.update(vpRef, anonymizeRecord(vpSnap.data(), ANONYMIZATION_MAP.volunteerProfiles));
+      }
+
+      // 6. Mark request fulfilled
+      batch.update(doc(db, "data_deletion_requests", request.id), {
+        status:      "fulfilled",
+        fulfilledBy: activeUser,
+        fulfilledAt: new Date().toISOString(),
+        retentionNote: `Data anonymized per M&M ${DATA_RETENTION_DAYS}-day retention policy. Aggregate records preserved.`,
+      });
+
+      await batch.commit();
+      setDeletionRequests(prev => prev.map(r =>
+        r.id === request.id ? { ...r, status: "fulfilled", fulfilledBy: activeUser, fulfilledAt: new Date().toISOString() } : r
+      ));
+    } catch (e) {
+      console.error("Fulfillment error:", e);
+    }
+    setFulfillingSaving(null);
+  };
+
+  const denyRequest = async (requestId) => {
+    if (!denyReason.trim()) return;
+    await updateDoc(doc(db, "data_deletion_requests", requestId), {
+      status:    "denied",
+      deniedBy:  activeUser,
+      deniedAt:  new Date().toISOString(),
+      denyReason: denyReason.trim(),
+    });
+    setDeletionRequests(prev => prev.map(r =>
+      r.id === requestId ? { ...r, status: "denied", denyReason: denyReason.trim() } : r
+    ));
+    setDenyingId(null);
+    setDenyReason("");
+  };
+
+  const runScheduledAnonymization = async () => {
+    if (!isRetentionExpired(event.event_date)) return;
+    // Auto-anonymize all records for this event past retention window
+    // This would be better as a Cloud Function in production
+    // For now surfaces as a manual trigger for founders
+    const batch  = writeBatch(db);
+    const rSnap  = await getDocs(collection(db, "events", eventId, "roster"));
+    rSnap.docs.forEach(d => batch.update(d.ref, anonymizeRecord(d.data(), ANONYMIZATION_MAP.roster)));
+    const ciSnap = await getDocs(query(collection(db, "check_ins"),  where("eventId", "==", eventId)));
+    ciSnap.docs.forEach(d => batch.update(d.ref, anonymizeRecord(d.data(), ANONYMIZATION_MAP.check_ins)));
+    const coSnap = await getDocs(query(collection(db, "check_outs"), where("eventId", "==", eventId)));
+    coSnap.docs.forEach(d => batch.update(d.ref, anonymizeRecord(d.data(), ANONYMIZATION_MAP.check_outs)));
+    await batch.commit();
+    alert("Event data anonymized. Aggregate records preserved.");
+  };
+
   const saveDebrief = async () => {
     setSaving(true);
     await updateDoc(doc(db, "events", eventId), { debrief_notes: debrief });
     setSaving(false);
+  };
+
+  const handleDeleteEvent = async () => {
+    setDeleting(true);
+    const batch = writeBatch(db);
+    for (const sub of ["roster", "client_staff"]) {
+      const snap = await getDocs(collection(db, "events", eventId, sub));
+      snap.docs.forEach(d => batch.delete(d.ref));
+    }
+    batch.delete(doc(db, "events", eventId));
+    await batch.commit();
+    navigate("/events");
   };
 
   if (loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"60vh" }}><Spinner size={32} /></div>;
@@ -587,8 +1031,42 @@ export default function EventCommand() {
             </div>
           )}
           <Badge color={accentColor} bg="rgba(255,255,255,0.12)">{event.pillar || "P3"}</Badge>
+          {isFounder && (
+            <button
+              onClick={() => setShowDeleteModal(true)}
+              title="Delete event"
+              style={{
+                background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)",
+                borderRadius: 8, padding: "6px 12px", cursor: "pointer", color: "rgba(255,255,255,0.7)",
+                fontSize: 13, fontFamily: "'DM Sans', sans-serif", fontWeight: 600,
+              }}
+            >🗑️ Delete</button>
+          )}
         </div>
       </div>
+
+      {/* Delete confirm modal */}
+      {showDeleteModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "#fff", borderRadius: 14, padding: 32, maxWidth: 420, width: "90%", boxShadow: "0 20px 60px rgba(0,0,0,0.2)", fontFamily: "'DM Sans', sans-serif" }}>
+            <div style={{ fontSize: 22, marginBottom: 8 }}>🗑️</div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "#8B0000", marginBottom: 8 }}>Delete This Event?</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: theme.primary, marginBottom: 4 }}>{event.event_nickname || event.name}</div>
+            <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 20 }}>{event.client} · {event.event_date || "No date"}</div>
+            <div style={{ fontSize: 12, color: "#8B0000", background: "#FFF5F5", border: "1px solid #ffcccc", borderRadius: 8, padding: "10px 14px", marginBottom: 24, lineHeight: 1.6 }}>
+              This will permanently delete this event and all associated roster and staff data. This cannot be undone.
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button onClick={() => setShowDeleteModal(false)} disabled={deleting} style={{ padding: "9px 20px", borderRadius: 8, border: `1.5px solid ${theme.border}`, background: "#fff", color: theme.text, fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>
+                Cancel
+              </button>
+              <button onClick={handleDeleteEvent} disabled={deleting} style={{ padding: "9px 20px", borderRadius: 8, border: "none", background: "#8B0000", color: "#fff", fontWeight: 700, fontSize: 13, cursor: deleting ? "not-allowed" : "pointer", fontFamily: "'DM Sans', sans-serif", opacity: deleting ? 0.7 : 1 }}>
+                {deleting ? "Deleting…" : "Yes, Delete Event"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Progress bar */}
       <div style={{ background: "#fff", padding: "14px 36px", borderBottom: `1px solid ${theme.border}`, display: "flex", alignItems: "center", gap: 16 }}>
@@ -610,8 +1088,10 @@ export default function EventCommand() {
           <div style={{ display: "flex", gap: 4, marginBottom: 18 }}>
             {[
               { key: "checklist",    label: "Checklist" },
+              { key: "shifts",       label: "Shifts" },
               { key: "staff",        label: `Staff Roster` },
               { key: "client_staff", label: "Client Staff" },
+              { key: "reports",      label: "Reports" },
             ].map(t => (
               <button key={t.key} onClick={() => handleTabChange(t.key)} style={{
                 padding: "7px 16px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer",
@@ -621,6 +1101,7 @@ export default function EventCommand() {
                 fontFamily: "'DM Sans', sans-serif", transition: "all 0.15s",
               }}>
                 {t.label}
+                {t.key === "shifts" && shifts.length > 0 && <span style={{ marginLeft: 6, opacity: 0.7 }}>({shifts.length})</span>}
                 {t.key === "staff" && staffProfiles.length > 0 && <span style={{ marginLeft: 6, opacity: 0.7 }}>({staffProfiles.length})</span>}
                 {t.key === "client_staff" && clientStaff.length > 0 && <span style={{ marginLeft: 6, opacity: 0.7 }}>({clientStaff.length})</span>}
               </button>
@@ -642,6 +1123,31 @@ export default function EventCommand() {
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                     <thead>
                       <tr style={{ borderBottom: `2px solid ${theme.border}` }}>
+                        {(() => {
+                          const uncleared = roster.filter(r => !r.isContractor && !r.background_check);
+                          if (event?.has_minors && uncleared.length > 0) return (
+                            <tr><td colSpan={6} style={{ padding: "8px 0 12px" }}>
+                              <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(139,0,0,0.06)", border: "1px solid rgba(139,0,0,0.2)", fontSize: 12, color: "#8B0000", fontWeight: 600 }}>
+                                🚫 Minors present — {uncleared.length} volunteer{uncleared.length !== 1 ? "s" : ""} on this roster have not cleared a background check. Do not place on floor until resolved.
+                              </div>
+                            </td></tr>
+                          );
+                          if (event?.allow_unverified && uncleared.length > 0) return (
+                            <tr><td colSpan={6} style={{ padding: "8px 0 12px" }}>
+                              <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(224,123,42,0.07)", border: "1px solid rgba(224,123,42,0.25)", fontSize: 12, color: "#E07B2A", fontWeight: 600 }}>
+                                ⚠ Unverified volunteers permitted for this event — {uncleared.length} uncleared. Assign to low-risk roles only (registration, wayfinding, crowd flow).
+                              </div>
+                            </td></tr>
+                          );
+                          if (!event?.allow_unverified && !event?.has_minors && uncleared.length > 0) return (
+                            <tr><td colSpan={6} style={{ padding: "8px 0 12px" }}>
+                              <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(139,0,0,0.06)", border: "1px solid rgba(139,0,0,0.2)", fontSize: 12, color: "#8B0000", fontWeight: 600 }}>
+                                ⚠ {uncleared.length} uncleared volunteer{uncleared.length !== 1 ? "s" : ""} on roster — background check not completed. Review before event day.
+                              </div>
+                            </td></tr>
+                          );
+                          return null;
+                        })()}
                         {["Name","Role","Type","Est. Pay","Code Sent","Onboarded"].map(h => (
                           <th key={h} style={{ padding: "6px 12px 8px 0", textAlign: "left", fontSize: 11, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>{h}</th>
                         ))}
@@ -650,9 +1156,16 @@ export default function EventCommand() {
                     <tbody>
                       {roster.map(r => {
                         const roleLabels = { volunteer: "Volunteer", team_lead: "Team Lead", ops_lead: "Ops Lead", ops_manager: "Ops Manager", engagement_lead: "Engagement Lead" };
+                        const hasMinorRisk  = event?.has_minors && !r.isContractor && !r.background_check;
+                        const hasUnclearedRisk = !event?.allow_unverified && !r.isContractor && !r.background_check;
+                        const rowWarning = hasMinorRisk || hasUnclearedRisk;
                         return (
-                          <tr key={r.id} style={{ borderBottom: `1px solid ${theme.border}` }}>
-                            <td style={{ padding: "9px 12px 9px 0", fontWeight: 600, color: theme.text, whiteSpace: "nowrap" }}>{r.name}</td>
+                          <tr key={r.id} style={{ borderBottom: `1px solid ${theme.border}`, background: hasMinorRisk ? "rgba(139,0,0,0.04)" : hasUnclearedRisk ? "rgba(224,123,42,0.04)" : "transparent" }}>
+                            <td style={{ padding: "9px 12px 9px 0", fontWeight: 600, color: theme.text, whiteSpace: "nowrap" }}>
+                              {r.name}
+                              {hasMinorRisk    && <span title="Minors present — background check not cleared" style={{ marginLeft: 6, fontSize: 12, color: "#8B0000" }}>⚠</span>}
+                              {hasUnclearedRisk && !hasMinorRisk && <span title="Background check not cleared" style={{ marginLeft: 6, fontSize: 12, color: "#E07B2A" }}>○</span>}
+                            </td>
                             <td style={{ padding: "9px 12px 9px 0", color: theme.textMuted, whiteSpace: "nowrap" }}>{roleLabels[r.floor_role] || r.floor_role || "—"}</td>
                             <td style={{ padding: "9px 12px 9px 0" }}>
                               <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
@@ -840,6 +1353,197 @@ export default function EventCommand() {
             </Card>
           )}
 
+          {/* ── SHIFTS TAB ── */}
+          {activeTab === "shifts" && (
+            <Card>
+              <div style={{ fontSize: 14, fontWeight: 700, color: theme.text, marginBottom: 4 }}>Volunteer Shifts</div>
+              <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 20, lineHeight: 1.6 }}>
+                Build shifts for volunteers to select from. Contractors see their Engagement Windows separately — they don't use this selector.
+              </div>
+
+              {/* Existing shifts */}
+              {shiftsLoading && <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16 }}>Loading shifts…</div>}
+              {!shiftsLoading && shifts.length === 0 && (
+                <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 20, padding: "16px 0", textAlign: "center", borderBottom: `1px solid ${theme.border}` }}>
+                  No shifts created yet. Build your first shift below.
+                </div>
+              )}
+              {shifts.map(shift => {
+                const filled   = (shift.assigned || []).length;
+                const cap      = shift.capacity || 0;
+                const pctFill  = cap > 0 ? Math.min(100, Math.round((filled / cap) * 100)) : 0;
+                const statusC  = filled >= cap && cap > 0 ? "#27ae60"
+                               : filled > 0             ? "#f39c12"
+                               :                          "#e74c3c";
+                const statusL  = filled >= cap && cap > 0 ? "Full"
+                               : filled > 0             ? `${filled}/${cap} filled`
+                               :                          "Unfilled";
+                return (
+                  <div key={shift.id} style={{ padding: "14px 0", borderBottom: `1px solid ${theme.border}` }}>
+                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: theme.text, marginBottom: 2 }}>{shift.name}</div>
+                        <div style={{ fontSize: 12, color: theme.textMuted }}>
+                          {shift.start_time} – {shift.end_time}
+                          {shift.zone      ? ` · ${shift.zone}`      : ""}
+                          {shift.role_type ? ` · ${shift.role_type}` : ""}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: statusC, background: statusC + "22", padding: "3px 8px", borderRadius: 999 }}>{statusL}</span>
+                        {isFounder && (
+                          <button onClick={() => deleteShift(shift.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: theme.textMuted, padding: "2px 4px" }} title="Delete shift">×</button>
+                        )}
+                      </div>
+                    </div>
+                    {/* Fill bar */}
+                    {cap > 0 && (
+                      <div style={{ height: 5, background: theme.border, borderRadius: 999, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${pctFill}%`, background: statusC, borderRadius: 999, transition: "width 0.3s" }} />
+                      </div>
+                    )}
+                    {/* Assigned names */}
+                    {(shift.assigned || []).length > 0 && (
+                      <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {shift.assigned.map((name, i) => (
+                          <span key={i} style={{ fontSize: 11, background: theme.background, border: `1px solid ${theme.border}`, borderRadius: 999, padding: "2px 8px", color: theme.text }}>{name}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* New shift builder */}
+              <div style={{ marginTop: 20 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Create New Shift</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                  {[
+                    { key: "name",      placeholder: "Shift name *  (e.g. Morning Ingress)" },
+                    { key: "zone",      placeholder: "Zone / Area  (e.g. Registration)" },
+                    { key: "start_time",placeholder: "Start time *  (e.g. 8:00 AM)" },
+                    { key: "end_time",  placeholder: "End time *  (e.g. 12:00 PM)" },
+                    { key: "capacity",  placeholder: "Volunteer capacity  (e.g. 8)" },
+                    { key: "role_type", placeholder: "Role type  (e.g. Badge Scanner)" },
+                  ].map(({ key, placeholder }) => (
+                    <input key={key}
+                      value={newShift[key]}
+                      onChange={e => setNewShift(p => ({ ...p, [key]: e.target.value }))}
+                      placeholder={placeholder}
+                      style={{ padding: "8px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none", color: theme.text, background: "#fff" }}
+                    />
+                  ))}
+                </div>
+                <Button size="sm" onClick={addShift}
+                  disabled={!newShift.name.trim() || !newShift.start_time || !newShift.end_time || shiftSaving}>
+                  {shiftSaving ? "Saving…" : "+ Create Shift"}
+                </Button>
+              </div>
+            </Card>
+          )}
+
+          {/* ── REPORTS TAB ── */}
+          {activeTab === "reports" && (
+            <div>
+              {/* Report selector grid */}
+              {!activeReport && (
+                <div>
+                  <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 20, lineHeight: 1.6 }}>
+                    Select a report to generate. All reports are scoped to this event. Use Export PDF to save for client deliverables or your records.
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+                    {REPORTS.map(r => (
+                      <button key={r.key} onClick={() => loadReport(r.key)} style={{
+                        padding: "16px 18px", borderRadius: 10, border: `1.5px solid ${theme.border}`,
+                        background: "#fff", cursor: "pointer", textAlign: "left",
+                        fontFamily: "'DM Sans', sans-serif", transition: "all 0.15s",
+                        boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+                      }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = primaryColor; e.currentTarget.style.boxShadow = "0 2px 12px rgba(28,74,54,0.1)"; }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = theme.border; e.currentTarget.style.boxShadow = "0 1px 4px rgba(0,0,0,0.04)"; }}
+                      >
+                        <div style={{ fontSize: 20, marginBottom: 6 }}>{r.icon}</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: theme.text }}>{r.label}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Report view */}
+              {activeReport && (
+                <Card>
+                  {/* Report header */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <button onClick={() => { setActiveReport(null); setReportData([]); }} style={{
+                        background: "none", border: `1.5px solid ${theme.border}`, borderRadius: 8,
+                        padding: "5px 10px", cursor: "pointer", fontSize: 12, color: theme.textMuted,
+                        fontFamily: "'DM Sans', sans-serif",
+                      }}>← Back</button>
+                      <div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: theme.text }}>
+                          {REPORTS.find(r => r.key === activeReport)?.icon} {REPORTS.find(r => r.key === activeReport)?.label}
+                        </div>
+                        <div style={{ fontSize: 11, color: theme.textMuted }}>{event.event_nickname || event.name} · {event.client}</div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={exportPDF}
+                      disabled={!reportData.length || exportingPDF}
+                      style={{
+                        padding: "8px 16px", borderRadius: 8, border: "none",
+                        background: reportData.length ? primaryColor : theme.border,
+                        color: reportData.length ? "#fff" : theme.textMuted,
+                        fontWeight: 700, fontSize: 12, cursor: reportData.length ? "pointer" : "not-allowed",
+                        fontFamily: "'DM Sans', sans-serif",
+                      }}
+                    >{exportingPDF ? "Exporting…" : "⬇ Export PDF"}</button>
+                  </div>
+
+                  {/* Loading */}
+                  {reportLoading && (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 0" }}>
+                      <Spinner size={24} />
+                    </div>
+                  )}
+
+                  {/* Empty */}
+                  {!reportLoading && reportData.length === 0 && (
+                    <div style={{ textAlign: "center", padding: "40px 0", color: theme.textMuted, fontSize: 13 }}>
+                      No data found for this report.
+                    </div>
+                  )}
+
+                  {/* Data table */}
+                  {!reportLoading && reportData.length > 0 && (
+                    <div style={{ overflowX: "auto" }}>
+                      <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 10 }}>{reportData.length} record{reportData.length !== 1 ? "s" : ""}</div>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ background: primaryColor }}>
+                            {Object.keys(reportData[0]).map(h => (
+                              <th key={h} style={{ padding: "8px 12px", textAlign: "left", color: "#fff", fontWeight: 700, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reportData.map((row, i) => (
+                            <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#f7f7f5", borderBottom: `1px solid ${theme.border}` }}>
+                              {Object.values(row).map((val, j) => (
+                                <td key={j} style={{ padding: "8px 12px", color: theme.text, verticalAlign: "top" }}>{String(val ?? "—")}</td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </Card>
+              )}
+            </div>
+          )}
+
         </div>{/* end left column */}
 
         {/* Right column */}
@@ -861,6 +1565,43 @@ export default function EventCommand() {
               </div>
             ) : null)}
           </Card>
+
+          {/* Coverage Summary */}
+          {shifts.length > 0 && (
+            <Card style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Floor Coverage</div>
+              {(() => {
+                // Group shifts by zone
+                const zones = {};
+                shifts.forEach(s => {
+                  const zone = s.zone || "General";
+                  if (!zones[zone]) zones[zone] = { filled: 0, capacity: 0, shifts: 0 };
+                  zones[zone].filled   += (s.assigned || []).length;
+                  zones[zone].capacity += (s.capacity || 0);
+                  zones[zone].shifts   += 1;
+                });
+                return Object.entries(zones).map(([zone, data]) => {
+                  const pct    = data.capacity > 0 ? Math.min(100, Math.round((data.filled / data.capacity) * 100)) : 0;
+                  const color  = pct >= 80 ? "#27ae60" : pct >= 40 ? "#f39c12" : "#e74c3c";
+                  const label  = pct >= 80 ? "Covered" : pct >= 40 ? "Partial" : "Needs Staff";
+                  return (
+                    <div key={zone} style={{ marginBottom: 12 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: theme.text }}>{zone}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 11, color: theme.textMuted }}>{data.filled}/{data.capacity}</span>
+                          <span style={{ fontSize: 10, fontWeight: 700, color, background: color + "22", padding: "2px 6px", borderRadius: 999 }}>{label}</span>
+                        </div>
+                      </div>
+                      <div style={{ height: 5, background: theme.border, borderRadius: 999, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 999, transition: "width 0.3s" }} />
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </Card>
+          )}
 
           {/* Theme swatch */}
           <Card style={{ marginBottom: 16 }}>
@@ -943,6 +1684,78 @@ export default function EventCommand() {
             </div>
           </Card>
 
+          {/* Deliverables */}
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Client Deliverables</div>
+                <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 2 }}>Final completed docs for the client. Link to the Deliverables subfolder in their Drive client folder.</div>
+              </div>
+              {/* Status badge */}
+              <div style={{
+                fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999,
+                background: deliverables.status === "notified" ? "#e6f4ec" : deliverables.status === "ready" ? "#fff8e6" : theme.background,
+                color: deliverables.status === "notified" ? "#2d7a46" : deliverables.status === "ready" ? "#8a6800" : theme.textMuted,
+                border: `1px solid ${deliverables.status === "notified" ? "#b6dfc4" : deliverables.status === "ready" ? "#f0d080" : theme.border}`,
+                whiteSpace: "nowrap",
+              }}>
+                {deliverables.status === "notified" ? "✓ Client Notified" : deliverables.status === "ready" ? "Ready to Send" : "Pending"}
+              </div>
+            </div>
+
+            {/* Folder link */}
+            {deliverables.folder_url && !editingDeliv ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <a href={deliverables.folder_url} target="_blank" rel="noreferrer"
+                  style={{ fontSize: 12, fontWeight: 600, color: theme.primary, textDecoration: "none", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  📁 Deliverables Folder ↗
+                </a>
+                <button onClick={() => { setEditingDeliv(true); setDelivFolderDraft(deliverables.folder_url); }}
+                  style={{ fontSize: 11, color: theme.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0 }}>Edit</button>
+              </div>
+            ) : editingDeliv ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+                <input value={delivFolderDraft} onChange={e => setDelivFolderDraft(e.target.value)}
+                  placeholder="Paste Drive Deliverables folder URL…"
+                  style={{ padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none", color: theme.text }} />
+                <div style={{ display: "flex", gap: 6 }}>
+                  <Button size="sm" onClick={saveDeliverables} disabled={!delivFolderDraft.trim() || savingDeliv}>{savingDeliv ? "Saving…" : "Save"}</Button>
+                  <Button size="sm" variant="outline" onClick={() => setEditingDeliv(false)}>Cancel</Button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ marginBottom: 12 }}>
+                <button onClick={() => setEditingDeliv(true)}
+                  style={{ fontSize: 12, fontWeight: 600, color: theme.primary, background: "none", border: `1px dashed ${theme.border}`, borderRadius: 6, padding: "8px 12px", cursor: "pointer", width: "100%", textAlign: "left", fontFamily: "'DM Sans', sans-serif" }}>
+                  + Link Deliverables Folder
+                </button>
+              </div>
+            )}
+
+            {/* Notify button */}
+            <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 10 }}>
+              {deliverables.status === "notified" ? (
+                <div style={{ fontSize: 11, color: "#2d7a46", fontWeight: 600 }}>
+                  ✓ Client notified {deliverables.notified_at ? new Date(deliverables.notified_at).toLocaleDateString() : ""}
+                </div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <Button
+                    size="sm"
+                    onClick={notifyClientDeliverables}
+                    disabled={!deliverables.folder_url || deliverables.status !== "ready"}
+                    style={{ opacity: (!deliverables.folder_url || deliverables.status !== "ready") ? 0.4 : 1 }}
+                  >
+                    Notify Client
+                  </Button>
+                  <div style={{ fontSize: 11, color: theme.textMuted }}>
+                    {!deliverables.folder_url ? "Add folder link first" : deliverables.status === "pending" ? "Save folder link to enable" : "Ready — notify when all docs are in the folder"}
+                  </div>
+                </div>
+              )}
+            </div>
+          </Card>
+
           {/* Debrief notes */}
           <Card>
             <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Debrief Notes</div>
@@ -954,6 +1767,104 @@ export default function EventCommand() {
             />
             <Button size="sm" variant="outline" onClick={saveDebrief} disabled={saving} style={{ marginTop: 8 }}>Save Notes</Button>
           </Card>
+
+          {/* Data Requests — founders only */}
+          {isFounder && (
+            <Card style={{ marginTop: 16, border: "1.5px solid #ffcccc" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#8B0000", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Data Requests
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {isRetentionExpired(event.event_date) && (
+                    <button onClick={runScheduledAnonymization} style={{
+                      fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 6,
+                      background: "#8B0000", color: "#fff", border: "none", cursor: "pointer",
+                      fontFamily: "'DM Sans', sans-serif",
+                    }}>⚡ Anonymize All</button>
+                  )}
+                  <span style={{ fontSize: 10, color: theme.textMuted }}>
+                    Retention: {DATA_RETENTION_DAYS}d
+                    {isRetentionExpired(event.event_date) ? " — ⚠ Expired" : ""}
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
+                Fulfilling a request anonymizes PII across roster, check-ins, check-outs, incidents, and volunteer profiles. Aggregate records are preserved per retention policy.
+              </div>
+
+              {deletionLoading && <div style={{ fontSize: 12, color: theme.textMuted }}>Loading…</div>}
+
+              {!deletionLoading && deletionRequests.length === 0 && (
+                <div style={{ fontSize: 12, color: theme.textMuted, padding: "10px 0" }}>No pending requests.</div>
+              )}
+
+              {deletionRequests.map(req => (
+                <div key={req.id} style={{ padding: "12px 0", borderBottom: `1px solid ${theme.border}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: theme.text }}>{req.name || req.uid}</div>
+                      <div style={{ fontSize: 11, color: theme.textMuted }}>
+                        {req.requestType || "Full anonymization"} · {req.submittedAt ? new Date(req.submittedAt).toLocaleDateString() : "—"}
+                      </div>
+                    </div>
+                    <span style={{
+                      fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                      background: req.status === "fulfilled" ? "#e8f5e9" : req.status === "denied" ? "#fff5f5" : "#fff8e7",
+                      color: req.status === "fulfilled" ? "#2d7a46" : req.status === "denied" ? "#8B0000" : "#8a6800",
+                    }}>{req.status || "pending"}</span>
+                  </div>
+
+                  {req.reason && (
+                    <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 8, fontStyle: "italic" }}>"{req.reason}"</div>
+                  )}
+
+                  {/* Fulfilled / denied notes */}
+                  {req.status === "fulfilled" && (
+                    <div style={{ fontSize: 11, color: "#2d7a46" }}>
+                      Fulfilled by {req.fulfilledBy} · {req.fulfilledAt ? new Date(req.fulfilledAt).toLocaleDateString() : ""}
+                    </div>
+                  )}
+                  {req.status === "denied" && (
+                    <div style={{ fontSize: 11, color: "#8B0000" }}>
+                      Denied by {req.deniedBy} — {req.denyReason}
+                    </div>
+                  )}
+
+                  {/* Deny input */}
+                  {denyingId === req.id && (
+                    <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
+                      <input
+                        value={denyReason}
+                        onChange={e => setDenyReason(e.target.value)}
+                        placeholder="Reason for denial…"
+                        style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }}
+                      />
+                      <button onClick={() => denyRequest(req.id)} style={{ padding: "6px 10px", borderRadius: 6, background: "#8B0000", color: "#fff", border: "none", fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>Confirm</button>
+                      <button onClick={() => { setDenyingId(null); setDenyReason(""); }} style={{ padding: "6px 10px", borderRadius: 6, background: theme.background, color: theme.textMuted, border: `1px solid ${theme.border}`, fontSize: 11, cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>Cancel</button>
+                    </div>
+                  )}
+
+                  {/* Action buttons — only for pending */}
+                  {(!req.status || req.status === "pending") && denyingId !== req.id && (
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <button
+                        onClick={() => fulfillRequest(req)}
+                        disabled={fulfillingSaving === req.id}
+                        style={{ padding: "5px 12px", borderRadius: 6, background: theme.primary, color: "#fff", border: "none", fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "'DM Sans', sans-serif", opacity: fulfillingSaving === req.id ? 0.6 : 1 }}
+                      >{fulfillingSaving === req.id ? "Processing…" : "✓ Fulfill"}</button>
+                      <button
+                        onClick={() => setDenyingId(req.id)}
+                        style={{ padding: "5px 12px", borderRadius: 6, background: "#fff", color: "#8B0000", border: "1px solid #ffcccc", fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}
+                      >✗ Deny</button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </Card>
+          )}
+
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { collection, getDocs, doc, updateDoc, setDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
+import { collection, getDocs, doc, updateDoc, setDoc, deleteDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../hooks/useAuth";
 import { theme } from "../theme";
@@ -19,6 +19,62 @@ const FLOOR_ROLES = [
   { value: "engagement_lead", label: "Engagement Lead" },
 ];
 
+// ── Checkr config ─────────────────────────────────────────────────────────────
+// Checkr dashboard URL — M&M orders and pays all background checks
+// Candidate pays nothing. Priority placement is earned through performance.
+const CHECKR_DASHBOARD_URL = "https://dashboard.checkr.com"; // update if your dashboard URL differs
+
+// ── M&M Rate Card ─────────────────────────────────────────────────────────────
+// Hourly roles billed per hour worked
+// Flat roles billed per event, tiered by event size (attendee headcount)
+// All rates editable from the UI — stored in Firestore under mm_rate_card
+const DEFAULT_RATE_CARD = {
+  hourly: [
+    { role: "team_lead",           label: "Team Lead",           rate: 30  },
+    { role: "ops_lead",            label: "Ops Lead",            rate: 55  },
+    { role: "general_contractor",  label: "General Contractor",  rate: 22  },
+    { role: "technical_specialist",label: "Technical Specialist",rate: 28  },
+  ],
+  flat: [
+    {
+      role: "engagement_lead",
+      label: "Engagement Lead",
+      tiers: [
+        { label: "Small (< 500) — flat/event",  max: 499,    rate: 1250 },
+        { label: "Medium (500–1499) — flat/event", max: 1499, rate: 2000 },
+        { label: "Large (1500+) — flat/day",    max: 999999, rate: 3000 },
+      ],
+    },
+    {
+      role: "founder_ops_manager",
+      label: "Founder / Ops Manager",
+      note: "Same rate as Engagement Lead at every tier. #3 (Ops Manager): Small tier = $55/hr in Ops Lead capacity. Medium = $1,000 flat/event. Large = $2,000 flat/day.",
+      tiers: [
+        { label: "Small (< 500) — flat/event",  max: 499,    rate: 1250 },
+        { label: "Medium (500–1499) — flat/event", max: 1499, rate: 2000 },
+        { label: "Large (1500+) — flat/day",    max: 999999, rate: 3000 },
+      ],
+    },
+  ],
+};
+
+const getRateForRole = (rateCard, role, attendeeCount = 0) => {
+  const hourly = (rateCard?.hourly || DEFAULT_RATE_CARD.hourly).find(r => r.role === role);
+  if (hourly) return { type: "hourly", rate: hourly.rate, label: `$${hourly.rate}/hr` };
+  const flat = (rateCard?.flat || DEFAULT_RATE_CARD.flat).find(r => r.role === role);
+  if (flat) {
+    const tier = flat.tiers.find(t => attendeeCount <= t.max) || flat.tiers[flat.tiers.length - 1];
+    return { type: "flat", rate: tier.rate, label: tier.rate > 0 ? `$${tier.rate} flat` : "Rate TBD" };
+  }
+  return null;
+};
+
+const CONTRACTOR_TYPES = [
+  { value: "event_contractor", label: "Event Contractor" },
+  { value: "mm_staff",         label: "M&M Staff" },
+  { value: "volunteer",        label: "Volunteer" },
+];
+
 const normPerson = (p) => ({
   ...p,
   display_name:         p.name || `${p.first_name || ""} ${p.last_name || ""}`.trim() || "Unnamed",
@@ -36,7 +92,29 @@ const normPerson = (p) => ({
   display_linkedin:     p.linkedin  !== "N/A" ? p.linkedin  : null,
   display_created:      p.createdAt || p.created_at || null,
   is_contractor:        p.preference === "Contractor / IC" || p.isContractor === true,
+  // Enhanced onboarding fields
+  contractor_type:      p.contractor_type || (p.preference === "Contractor / IC" || p.isContractor ? "event_contractor" : "volunteer"),
+  bg_status:            p.bg_status || "not_started",  // not_started | pending | cleared | not_cleared
+  bg_cleared_date:      p.bg_cleared_date || null,
+  // Reimbursement only for event_contractor — M&M pays Checkr, contractor reimburses after first shift
+  reimbursement_due:    p.contractor_type === "event_contractor" ? (p.reimbursement_due || false) : false,
+  reimbursement_amount: p.reimbursement_amount || 29,
+  reimbursement_paid:   p.reimbursement_paid || false,
+  checkr_invite_sent:   p.checkr_invite_sent || false,
+  checkr_invite_date:   p.checkr_invite_date || null,
+  ica_url:              p.ica_url || "",
+  // Priority placement is earned — based on ratings, reliability, and performance
+  priority_contractor:  p.priority_contractor || false,
+  reliability_score:    p.reliability_score   || null, // set manually or via future scoring engine
+  events_completed:     p.events_completed    || 0,
 });
+
+const BG_STATUS = {
+  not_started: { label: "Not Started",  color: "#999",    bg: "rgba(150,150,150,0.1)" },
+  pending:     { label: "Pending",      color: "#E07B2A", bg: "rgba(224,123,42,0.1)"  },
+  cleared:     { label: "Cleared ✓",   color: "#2d7a46", bg: "rgba(45,122,70,0.1)"   },
+  not_cleared: { label: "Not Cleared", color: "#8B0000", bg: "rgba(139,0,0,0.1)"     },
+};
 
 const parseRate = (rateStr) => {
   if (!rateStr || rateStr === "N/A" || rateStr === "—") return null;
@@ -74,17 +152,35 @@ export default function CrewPool() {
   const [assignRole,   setAssignRole]   = useState("volunteer");
   const [assignHours,  setAssignHours]  = useState("");
   const [assignNote,   setAssignNote]   = useState("");
+  const [rateCard,     setRateCard]     = useState(DEFAULT_RATE_CARD);
+  const [showRateCard, setShowRateCard] = useState(false);
+  const [editingRates, setEditingRates] = useState(false);
+  const [rateCardDraft,setRateCardDraft]= useState(null);
+  const [savingRates,  setSavingRates]  = useState(false);
+  const [editingBg,    setEditingBg]    = useState(false);
+  const [bgStatus,     setBgStatus]     = useState("not_started");
+  const [bgDate,       setBgDate]       = useState("");
+  const [bgSelfPaid,   setBgSelfPaid]   = useState(false);
+  const [editingIca,   setEditingIca]   = useState(false);
+  const [icaUrl,       setIcaUrl]       = useState("");
+  const [editingType,  setEditingType]  = useState(false);
+  const [contractorType, setContractorType] = useState("event_contractor");
 
   useEffect(() => { loadAll(); }, []);
 
   const loadAll = async () => {
     setLoading(true);
-    const [peopleSnap, eventsSnap] = await Promise.all([
+    const [peopleSnap, eventsSnap, rateSnap] = await Promise.all([
       getDocs(collection(db, "talent_pool")),
       getDocs(collection(db, "events")),
+      getDocs(collection(db, "mm_rate_card")),
     ]);
     setPeople(peopleSnap.docs.map(d => normPerson({ id: d.id, ...d.data() })));
     setEvents(eventsSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+    if (!rateSnap.empty) {
+      const saved = rateSnap.docs[0].data();
+      setRateCard(saved);
+    }
     setLoading(false);
   };
 
@@ -99,15 +195,75 @@ export default function CrewPool() {
     await loadAssignments(person);
   };
 
-  const toggleCheck = async (person, field) => {
-    setSaving(true);
-    const next = !person[field];
-    await updateDoc(doc(db, "talent_pool", person.id), { [field]: next });
+  const refreshPerson = async (id) => {
     const snap = await getDocs(collection(db, "talent_pool"));
     const refreshed = snap.docs.map(d => normPerson({ id: d.id, ...d.data() }));
     setPeople(refreshed);
-    const updated = refreshed.find(p => p.id === person.id);
+    const updated = refreshed.find(p => p.id === id);
     if (updated) setSelected(updated);
+  };
+
+  const toggleCheck = async (person, field) => {
+    setSaving(true);
+    await updateDoc(doc(db, "talent_pool", person.id), { [field]: !person[field] });
+    await refreshPerson(person.id);
+    setSaving(false);
+  };
+
+  const saveBgCheck = async () => {
+    if (!selected) return;
+    setSaving(true);
+    const isCleared         = bgStatus === "cleared";
+    const isEventContractor = selected.contractor_type === "event_contractor";
+
+    // Event contractors: M&M pays Checkr upfront, contractor reimburses after first shift
+    const reimbFields = isEventContractor && isCleared
+      ? { reimbursement_due: true, reimbursement_amount: 29, reimbursement_paid: false }
+      : {};
+
+    await updateDoc(doc(db, "talent_pool", selected.id), {
+      bg_status:        bgStatus,
+      bg_cleared_date:  bgDate || null,
+      background_check: isCleared,
+      ...reimbFields,
+    });
+    await refreshPerson(selected.id);
+    setEditingBg(false);
+    setSaving(false);
+  };
+
+  const saveIca = async () => {
+    if (!selected) return;
+    setSaving(true);
+    await updateDoc(doc(db, "talent_pool", selected.id), {
+      ica_url:      icaUrl,
+      ic_agreement: !!icaUrl,
+    });
+    await refreshPerson(selected.id);
+    setEditingIca(false);
+    setSaving(false);
+  };
+
+  const saveContractorType = async () => {
+    if (!selected) return;
+    setSaving(true);
+    await updateDoc(doc(db, "talent_pool", selected.id), {
+      contractor_type: contractorType,
+      isContractor: contractorType !== "volunteer",
+    });
+    await refreshPerson(selected.id);
+    setEditingType(false);
+    setSaving(false);
+  };
+
+  const markReimbursementPaid = async () => {
+    if (!selected) return;
+    setSaving(true);
+    await updateDoc(doc(db, "talent_pool", selected.id), {
+      reimbursement_paid: true,
+      reimbursement_due:  false,
+    });
+    await refreshPerson(selected.id);
     setSaving(false);
   };
 
@@ -202,6 +358,46 @@ export default function CrewPool() {
     return "pending";
   };
 
+  const sendCheckrInvite = async () => {
+    if (!selected) return;
+    // Opens Checkr dashboard — M&M orders and pays the check from there
+    window.open(CHECKR_DASHBOARD_URL, "_blank");
+    // Log that check was ordered
+    setSaving(true);
+    await updateDoc(doc(db, "talent_pool", selected.id), {
+      checkr_invite_sent: true,
+      checkr_invite_date: new Date().toISOString().split("T")[0],
+      bg_status: "pending",
+      background_check: false,
+    });
+    await refreshPerson(selected.id);
+    setSaving(false);
+  };
+
+  const togglePriorityPlacement = async () => {
+    if (!selected) return;
+    setSaving(true);
+    await updateDoc(doc(db, "talent_pool", selected.id), {
+      priority_contractor: !selected.priority_contractor,
+    });
+    await refreshPerson(selected.id);
+    setSaving(false);
+  };
+
+  const saveRateCard = async () => {
+    if (!rateCardDraft) return;
+    setSavingRates(true);
+    const snap = await getDocs(collection(db, "mm_rate_card"));
+    if (snap.empty) {
+      await addDoc(collection(db, "mm_rate_card"), rateCardDraft);
+    } else {
+      await updateDoc(doc(db, "mm_rate_card", snap.docs[0].id), rateCardDraft);
+    }
+    setRateCard(rateCardDraft);
+    setEditingRates(false);
+    setSavingRates(false);
+  };
+
   const availableRoles = FLOOR_ROLES.filter(r => !r.contractorOnly || selected?.is_contractor);
 
   if (loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"60vh" }}><Spinner size={32} /></div>;
@@ -213,7 +409,16 @@ export default function CrewPool() {
       {/* List */}
       <div style={{ width: 290, borderRight: `1px solid ${theme.border}`, display: "flex", flexDirection: "column", background: theme.surface, flexShrink: 0 }}>
         <div style={{ padding: "20px 14px 12px", borderBottom: `1px solid ${theme.border}` }}>
-          <h2 style={{ margin: "0 0 3px", fontSize: 19, fontWeight: 700, color: theme.primary, fontFamily: "'Playfair Display', serif" }}>Talent Pool</h2>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <h2 style={{ margin: "0 0 3px", fontSize: 19, fontWeight: 700, color: theme.primary, fontFamily: "'Playfair Display', serif" }}>Talent Pool</h2>
+            <button onClick={() => { setShowRateCard(v => !v); setEditingRates(false); }} style={{
+              fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 6,
+              background: showRateCard ? theme.primary : "transparent",
+              color: showRateCard ? "#fff" : theme.textMuted,
+              border: `1px solid ${showRateCard ? theme.primary : theme.border}`,
+              cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+            }}>Rate Card</button>
+          </div>
           <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 10 }}>
             {people.length} registered · <span style={{ color: theme.secondary, fontWeight: 700 }}>{people.filter(p => assignmentGate(p) === null).length} ready</span>
           </div>
@@ -271,6 +476,81 @@ export default function CrewPool() {
           }
         </div>
       </div>
+
+      {/* Rate Card Panel */}
+      {showRateCard && (
+        <div style={{ width: 320, borderRight: `1px solid ${theme.border}`, background: "#fff", overflowY: "auto", padding: "20px 16px", flexShrink: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: theme.primary }}>M&M Rate Card</div>
+            {!editingRates
+              ? <button onClick={() => { setEditingRates(true); setRateCardDraft(JSON.parse(JSON.stringify(rateCard))); }} style={{ fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 6, border: `1px solid ${theme.border}`, background: "#fff", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", color: theme.text }}>Edit</button>
+              : <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={saveRateCard} disabled={savingRates} style={{ fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 6, border: "none", background: theme.primary, color: "#fff", cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>{savingRates ? "Saving…" : "Save"}</button>
+                  <button onClick={() => setEditingRates(false)} style={{ fontSize: 11, padding: "3px 8px", borderRadius: 6, border: `1px solid ${theme.border}`, background: "#fff", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", color: theme.textMuted }}>Cancel</button>
+                </div>
+            }
+          </div>
+
+          {/* Hourly roles */}
+          <div style={{ fontSize: 10, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Hourly Rates</div>
+          {(editingRates ? rateCardDraft : rateCard).hourly?.map((r, i) => (
+            <div key={r.role} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${theme.border}` }}>
+              <div style={{ fontSize: 13, color: theme.text }}>{r.label}</div>
+              {editingRates ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ fontSize: 12, color: theme.textMuted }}>$</span>
+                  <input type="number" value={rateCardDraft.hourly[i].rate}
+                    onChange={e => {
+                      const d = JSON.parse(JSON.stringify(rateCardDraft));
+                      d.hourly[i].rate = parseFloat(e.target.value) || 0;
+                      setRateCardDraft(d);
+                    }}
+                    style={{ width: 60, padding: "4px 6px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none", textAlign: "right" }}
+                  />
+                  <span style={{ fontSize: 12, color: theme.textMuted }}>/hr</span>
+                </div>
+              ) : (
+                <span style={{ fontSize: 13, fontWeight: 700, color: theme.primary }}>${r.rate}/hr</span>
+              )}
+            </div>
+          ))}
+
+          {/* Flat / tiered roles */}
+          <div style={{ fontSize: 10, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.1em", marginTop: 16, marginBottom: 8 }}>Flat Rate — Tiered by Event Size</div>
+          {(editingRates ? rateCardDraft : rateCard).flat?.map((r, ri) => (
+            <div key={r.role} style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: theme.text, marginBottom: 4 }}>{r.label}</div>
+              {r.note && <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 6, fontStyle: "italic" }}>{r.note}</div>}
+              {r.tiers.map((t, ti) => (
+                <div key={t.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0 6px 10px", borderBottom: `1px solid ${theme.border}` }}>
+                  <div style={{ fontSize: 12, color: theme.textMuted }}>{t.label}</div>
+                  {editingRates ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ fontSize: 12, color: theme.textMuted }}>$</span>
+                      <input type="number" value={rateCardDraft.flat[ri].tiers[ti].rate}
+                        onChange={e => {
+                          const d = JSON.parse(JSON.stringify(rateCardDraft));
+                          d.flat[ri].tiers[ti].rate = parseFloat(e.target.value) || 0;
+                          setRateCardDraft(d);
+                        }}
+                        style={{ width: 70, padding: "4px 6px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none", textAlign: "right" }}
+                      />
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: 12, fontWeight: 700, color: t.rate > 0 ? theme.primary : theme.textMuted }}>
+                      {t.rate > 0 ? `$${t.rate.toLocaleString()}` : "TBD"}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+
+          <div style={{ marginTop: 16, padding: "10px 12px", borderRadius: 8, background: theme.background, border: `1px solid ${theme.border}`, fontSize: 11, color: theme.textMuted, lineHeight: 1.6 }}>
+            Volunteers are unpaid. Founder flat rates are per event (Small/Medium) or per day (Large). #3 (Ops Manager): Small = $55/hr (Ops Lead capacity) · Medium = $1,000 flat/event · Large = $2,000 flat/day.
+          </div>
+        </div>
+      )}
 
       {/* Detail */}
       <div style={{ flex: 1, overflowY: "auto", padding: "26px 28px", background: theme.background }}>
@@ -388,10 +668,206 @@ export default function CrewPool() {
                 </Card>
               )}
 
-              {/* Onboarding checklist */}
+              {/* ── Contractor Type ───────────────────────────────────── */}
+              <Card style={{ marginBottom: 20 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Engagement Type</div>
+                  {!editingType && <Button size="sm" variant="outline" onClick={() => { setEditingType(true); setContractorType(selected.contractor_type); }}>Edit</Button>}
+                </div>
+                {editingType ? (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <select value={contractorType} onChange={e => setContractorType(e.target.value)}
+                      style={{ padding: "7px 10px", borderRadius: 8, border: `1.5px solid ${theme.border}`, fontSize: 13, fontFamily: "'DM Sans', sans-serif", outline: "none", flex: 1 }}>
+                      {CONTRACTOR_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                    </select>
+                    <Button size="sm" onClick={saveContractorType} disabled={saving}>{saving ? "…" : "Save"}</Button>
+                    <Button size="sm" variant="outline" onClick={() => setEditingType(false)}>Cancel</Button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: theme.text }}>
+                      {CONTRACTOR_TYPES.find(t => t.value === selected.contractor_type)?.label || "Event Contractor"}
+                    </span>
+                    {selected.contractor_type === "mm_staff" && (
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(15,52,96,0.1)", color: "#0F3460" }}>M&M Internal</span>
+                    )}
+                    {selected.priority_contractor && (
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(235,199,100,0.2)", color: "#8a6800" }}>⭐ Priority Placement</span>
+                    )}
+                  </div>
+                )}
+                {selected.contractor_type === "mm_staff" && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: theme.textMuted }}>M&M covers background check cost for all staff.</div>
+                )}
+                {selected.contractor_type === "event_contractor" && !selected.priority_contractor && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: theme.textMuted }}>
+                    Volunteers who complete a self-paid background check unlock <strong>priority placement</strong> on paid engagements.
+                  </div>
+                )}
+              </Card>
+
+              {/* ── Background Check ──────────────────────────────────────── */}
+              <Card style={{ marginBottom: 20 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Background Check</div>
+                  {!editingBg && (
+                    <Button size="sm" variant="outline" onClick={() => {
+                      setEditingBg(true);
+                      setBgStatus(selected.bg_status || "not_started");
+                      setBgDate(selected.bg_cleared_date || "");
+                      setBgSelfPaid(selected.bg_self_paid || false);
+                    }}>Update</Button>
+                  )}
+                </div>
+                {editingBg ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 11, color: theme.textMuted, fontWeight: 600, marginBottom: 4 }}>Result (Pass / Fail only)</div>
+                        <select value={bgStatus} onChange={e => setBgStatus(e.target.value)}
+                          style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: `1.5px solid ${theme.border}`, fontSize: 13, fontFamily: "'DM Sans', sans-serif", outline: "none" }}>
+                          <option value="not_started">Not Started</option>
+                          <option value="pending">Pending</option>
+                          <option value="cleared">Cleared (Pass)</option>
+                          <option value="not_cleared">Not Cleared (Fail)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11, color: theme.textMuted, fontWeight: 600, marginBottom: 4 }}>Date Cleared</div>
+                        <input type="date" value={bgDate} onChange={e => setBgDate(e.target.value)}
+                          style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: `1.5px solid ${theme.border}`, fontSize: 13, fontFamily: "'DM Sans', sans-serif", outline: "none", boxSizing: "border-box" }} />
+                      </div>
+                    </div>
+                    {selected.contractor_type === "event_contractor" && (
+                      <div style={{ fontSize: 12, color: theme.textMuted, padding: "6px 10px", borderRadius: 6, background: theme.background, border: `1px solid ${theme.border}` }}>
+                        💳 M&M pays Checkr. Contractor reimburses $29 via Gusto deduction after first shift.
+                      </div>
+                    )}
+                    {selected.contractor_type === "mm_staff" && (
+                      <div style={{ fontSize: 12, color: theme.textMuted, padding: "6px 10px", borderRadius: 6, background: theme.background, border: `1px solid ${theme.border}` }}>
+                        💳 M&M pays Checkr directly for all staff. No reimbursement.
+                      </div>
+                    )}
+                    {selected.contractor_type === "volunteer" && (
+                      <div style={{ fontSize: 12, color: theme.textMuted, padding: "6px 10px", borderRadius: 6, background: theme.background, border: `1px solid ${theme.border}` }}>
+                        💳 M&M pays Checkr. Priority placement earned through performance — not tied to check cost.
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <Button size="sm" onClick={saveBgCheck} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
+                      <Button size="sm" variant="outline" onClick={() => setEditingBg(false)}>Cancel</Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+                      <span style={{
+                        fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 999,
+                        background: BG_STATUS[selected.bg_status]?.bg || BG_STATUS.not_started.bg,
+                        color: BG_STATUS[selected.bg_status]?.color || BG_STATUS.not_started.color,
+                      }}>{BG_STATUS[selected.bg_status]?.label || "Not Started"}</span>
+                      {selected.bg_cleared_date && (
+                        <span style={{ fontSize: 11, color: theme.textMuted }}>Cleared: {selected.bg_cleared_date}</span>
+                      )}
+                    </div>
+
+                    {/* Checkr actions */}
+                    {selected.bg_status !== "cleared" && (
+                      <div style={{ marginTop: 8 }}>
+                        {selected.checkr_invite_sent ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <span style={{ fontSize: 12, color: theme.textMuted }}>
+                              ⏳ Check ordered {selected.checkr_invite_date || ""} — awaiting result
+                            </span>
+                            <button onClick={sendCheckrInvite} disabled={saving} style={{
+                              fontSize: 11, color: theme.primary, background: "none", border: "none",
+                              cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontWeight: 700, padding: 0,
+                            }}>Open Checkr</button>
+                          </div>
+                        ) : (
+                          <div>
+                            <Button size="sm" variant="outline" onClick={sendCheckrInvite} disabled={saving}>
+                              Order Background Check
+                            </Button>
+                            <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 6 }}>
+                              {selected.contractor_type === "mm_staff" && "M&M pays. No reimbursement."}
+                              {selected.contractor_type === "event_contractor" && "M&M pays Checkr. Contractor reimburses $29 via Gusto after first shift."}
+                              {selected.contractor_type === "volunteer" && "M&M pays Checkr. Priority placement earned through reliability and ratings — not tied to check cost."}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Reimbursement flag — event contractors only */}
+                    {selected.reimbursement_due && !selected.reimbursement_paid && (
+                      <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(235,199,100,0.15)", border: "1px solid rgba(235,199,100,0.4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: "#8a6800" }}>💰 Reimbursement Due</span>
+                          <span style={{ fontSize: 12, color: "#8a6800", marginLeft: 6 }}>${selected.reimbursement_amount} — add to next Gusto payout</span>
+                        </div>
+                        <Button size="sm" variant="outline" onClick={markReimbursementPaid} disabled={saving}>Mark Paid</Button>
+                      </div>
+                    )}
+                    {selected.reimbursement_paid && (
+                      <div style={{ marginTop: 8, fontSize: 12, color: "#2d7a46" }}>✓ Reimbursement paid</div>
+                    )}
+
+                    {/* Priority placement — volunteers only, performance-based */}
+                    {selected.contractor_type === "volunteer" && selected.bg_status === "cleared" && (
+                      <div style={{ marginTop: 12, padding: "8px 12px", borderRadius: 8, background: selected.priority_contractor ? "rgba(235,199,100,0.15)" : theme.background, border: `1px solid ${selected.priority_contractor ? "rgba(235,199,100,0.4)" : theme.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: selected.priority_contractor ? "#8a6800" : theme.textMuted }}>
+                            {selected.priority_contractor ? "⭐ Priority Placement Active" : "Priority Placement"}
+                          </span>
+                          <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 2 }}>
+                            Earned through reliability, ratings, and event history
+                          </div>
+                        </div>
+                        <Button size="sm" variant="outline" onClick={togglePriorityPlacement} disabled={saving}>
+                          {selected.priority_contractor ? "Remove" : "Award"}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Card>
+
+              {/* ── ICA / Agreement ───────────────────────────────────────── */}
+              {selected.is_contractor && (
+                <Card style={{ marginBottom: 20 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em" }}>IC Agreement</div>
+                    {!editingIca && <Button size="sm" variant="outline" onClick={() => { setEditingIca(true); setIcaUrl(selected.ica_url || ""); }}>
+                      {selected.ic_agreement ? "Edit" : "Add Link"}
+                    </Button>}
+                  </div>
+                  {editingIca ? (
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input value={icaUrl} onChange={e => setIcaUrl(e.target.value)}
+                        placeholder="PandaDoc or Drive URL for signed ICA…"
+                        style={{ flex: 1, padding: "7px 10px", borderRadius: 8, border: `1.5px solid ${theme.border}`, fontSize: 13, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
+                      <Button size="sm" onClick={saveIca} disabled={saving}>{saving ? "…" : "Save"}</Button>
+                      <Button size="sm" variant="outline" onClick={() => setEditingIca(false)}>Cancel</Button>
+                    </div>
+                  ) : selected.ic_agreement ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: "rgba(45,122,70,0.1)", color: "#2d7a46" }}>Signed ✓</span>
+                      {selected.ica_url && <a href={selected.ica_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: theme.primary, fontWeight: 700, textDecoration: "none" }}>View ↗</a>}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 13, color: theme.textMuted, fontStyle: "italic" }}>No ICA on file — add the signed doc link above.</div>
+                  )}
+                </Card>
+              )}
+
+              {/* ── Remaining checklist items ─────────────────────────────── */}
               <Card style={{ marginBottom: 20 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 14 }}>Onboarding Checklist</div>
-                {checklist.map(({ key, label, required }) => (
+                {[
+                  { key: "onboarding_complete", label: "Onboarding Packet Sent",  required: false },
+                  { key: "axis_trained",        label: "Axis Trained",            required: false },
+                ].map(({ key, label, required }) => (
                   <div key={key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${theme.border}` }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <div style={{ width: 20, height: 20, borderRadius: 6, flexShrink: 0,
@@ -401,10 +877,7 @@ export default function CrewPool() {
                       }}>
                         {selected[key] && <span style={{ color: "#fff", fontSize: 11 }}>✓</span>}
                       </div>
-                      <span style={{ fontSize: 14, color: selected[key] ? theme.text : theme.textMuted, fontWeight: selected[key] ? 600 : 400 }}>
-                        {label}
-                        {required && !selected[key] && <span style={{ fontSize: 10, color: theme.warning, marginLeft: 6, fontWeight: 700 }}>REQUIRED</span>}
-                      </span>
+                      <span style={{ fontSize: 14, color: selected[key] ? theme.text : theme.textMuted, fontWeight: selected[key] ? 600 : 400 }}>{label}</span>
                     </div>
                     <Button variant="outline" size="sm" disabled={saving} onClick={() => toggleCheck(selected, key)}>
                       {selected[key] ? "Undo" : "Mark complete"}
@@ -422,7 +895,11 @@ export default function CrewPool() {
                     ["Experience",   selected.display_exp],
                     ["Availability", selected.display_availability],
                     ["Interests",    selected.display_interests],
-                    ["Rate",         selected.display_rate],
+                    ["Requested Rate", selected.display_rate],
+                    ["M&M Rate",       (() => {
+                      const r = getRateForRole(rateCard, selected.floor_role || selected.display_type);
+                      return r ? r.label : "See rate card";
+                    })()],
                     ["Entity Type",  selected.display_entity],
                     ["Location",     selected.display_city],
                     ["Instagram",    selected.display_instagram],

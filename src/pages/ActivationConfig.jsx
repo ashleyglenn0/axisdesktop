@@ -32,6 +32,8 @@ export default function ActivationConfig() {
     logo_url:        "",
     access_code:     "",
     event_nickname:  "",
+    has_minors:      false,
+    allow_unverified: false,
   });
 
   const cf = (key) => (val) => setConfig(c => ({ ...c, [key]: val }));
@@ -230,6 +232,83 @@ export default function ActivationConfig() {
             </div>
           )}
         </div>
+      </Card>
+
+      {/* Minors Flag */}
+      <Card style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: theme.text, marginBottom: 3 }}>Minors Present at Event</div>
+            <div style={{ fontSize: 12, color: theme.textMuted }}>
+              If enabled, uncleared volunteers on the roster will be flagged before event day. Background checks required for all floor staff.
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              const next = !config.has_minors;
+              cf("has_minors")(next);
+              if (next) cf("allow_unverified")(false); // minors overrides unverified
+            }}
+            style={{
+              width: 44, height: 24, borderRadius: 999, border: "none", cursor: "pointer", flexShrink: 0,
+              background: config.has_minors ? theme.primary : theme.border,
+              position: "relative", transition: "background 0.2s",
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: "50%", background: "#fff",
+              position: "absolute", top: 3, transition: "left 0.2s",
+              left: config.has_minors ? 23 : 3,
+            }} />
+          </button>
+        </div>
+        {config.has_minors && (
+          <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(139,0,0,0.06)", border: "1px solid rgba(139,0,0,0.15)", fontSize: 12, color: "#8B0000", fontWeight: 600 }}>
+            ⚠ Minors flag active — uncleared roster members will be flagged in Event Command.
+          </div>
+        )}
+      </Card>
+
+      {/* Unverified Volunteers */}
+      <Card style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: theme.text, marginBottom: 3 }}>Allow Unverified Volunteers</div>
+            <div style={{ fontSize: 12, color: theme.textMuted }}>
+              Permits volunteers without a cleared background check to work this event. Limit to low-risk roles only — registration, wayfinding, crowd flow. Cannot be enabled alongside Minors Present.
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              if (config.has_minors) return; // block if minors flag is on
+              cf("allow_unverified")(!config.allow_unverified);
+            }}
+            title={config.has_minors ? "Cannot allow unverified volunteers at events with minors present" : ""}
+            style={{
+              width: 44, height: 24, borderRadius: 999, border: "none", flexShrink: 0,
+              cursor: config.has_minors ? "not-allowed" : "pointer",
+              background: config.has_minors ? theme.border : config.allow_unverified ? "#E07B2A" : theme.border,
+              position: "relative", transition: "background 0.2s",
+              opacity: config.has_minors ? 0.4 : 1,
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: "50%", background: "#fff",
+              position: "absolute", top: 3, transition: "left 0.2s",
+              left: config.allow_unverified && !config.has_minors ? 23 : 3,
+            }} />
+          </button>
+        </div>
+        {config.has_minors && (
+          <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(139,0,0,0.06)", border: "1px solid rgba(139,0,0,0.15)", fontSize: 12, color: "#8B0000", fontWeight: 600 }}>
+            🚫 Cannot allow unverified volunteers — Minors Present is enabled.
+          </div>
+        )}
+        {config.allow_unverified && !config.has_minors && (
+          <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(224,123,42,0.08)", border: "1px solid rgba(224,123,42,0.25)", fontSize: 12, color: "#E07B2A", fontWeight: 600 }}>
+            ⚠ Unverified volunteers permitted — assign to low-risk roles only. This decision is logged.
+          </div>
+        )}
       </Card>
 
       {/* Event summary pulled from pipeline */}

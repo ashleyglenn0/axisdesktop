@@ -11,6 +11,11 @@ const NAV = [
   { to: "/crew-pool",        label: "Talent Pool",      icon: "◎" },
   { to: "/activation-setup", label: "Activation Queue", icon: "◇" },
   { to: "/events",           label: "Events",           icon: "◉" },
+  { to: "/library",          label: "Library",          icon: "◫" },
+  { to: "/finance",          label: "Finance",          icon: "◈" },
+  { to: "/chat",             label: "Chat",             icon: "◎" },
+  { to: "/analytics",       label: "Analytics",        icon: "◈" },
+  { to: "/inbox",           label: "Inbox",            icon: "✉" },
 ];
 
 export default function Sidebar() {

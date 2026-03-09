@@ -4,6 +4,11 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import Sidebar from "./components/Sidebar";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+import Library   from "./pages/Library";
+import Finance   from "./pages/Finance";
+import Chat      from "./pages/Chat";
+import Analytics from "./pages/Analytics";
+import Inbox     from "./pages/Inbox";
 import Leads from "./pages/Leads";
 import Pipeline from "./pages/Pipeline";
 import Events from "./pages/Events";
@@ -38,6 +43,11 @@ export default function App() {
           <Route path="/activation-config/:intakeId" element={<ProtectedRoute><AppShell><ActivationConfig /></AppShell></ProtectedRoute>} />
           <Route path="/events" element={<ProtectedRoute><AppShell><Events /></AppShell></ProtectedRoute>} />
           <Route path="/event/:eventId" element={<ProtectedRoute><AppShell><EventCommand /></AppShell></ProtectedRoute>} />
+          <Route path="/library" element={<ProtectedRoute><AppShell><Library /></AppShell></ProtectedRoute>} />
+          <Route path="/finance" element={<ProtectedRoute><AppShell><Finance /></AppShell></ProtectedRoute>} />
+          <Route path="/chat" element={<ProtectedRoute><AppShell><Chat /></AppShell></ProtectedRoute>} />
+          <Route path="/analytics" element={<ProtectedRoute><AppShell><Analytics /></AppShell></ProtectedRoute>} />
+          <Route path="/inbox" element={<ProtectedRoute><AppShell><Inbox /></AppShell></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </BrowserRouter>
