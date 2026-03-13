@@ -13,27 +13,50 @@ const genCode = (name) => {
   return base + num;
 };
 
+// Reusable toggle shared across all three ops setting rows
+function Toggle({ value, onChange, disabled = false, activeColor }) {
+  return (
+    <button
+      onClick={() => !disabled && onChange(!value)}
+      style={{
+        width: 44, height: 24, borderRadius: 999, border: "none", flexShrink: 0,
+        cursor: disabled ? "not-allowed" : "pointer",
+        background: disabled ? theme.border : value ? (activeColor || theme.primary) : theme.border,
+        position: "relative", transition: "background 0.2s",
+        opacity: disabled ? 0.4 : 1,
+      }}
+    >
+      <div style={{
+        width: 18, height: 18, borderRadius: "50%", background: "#fff",
+        position: "absolute", top: 3, transition: "left 0.2s",
+        left: value && !disabled ? 23 : 3,
+      }} />
+    </button>
+  );
+}
+
 export default function ActivationConfig() {
   const { intakeId } = useParams();
   const { activeUser } = useAuth();
   const navigate = useNavigate();
 
-  const [intake,  setIntake]  = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [intake,      setIntake]      = useState(null);
+  const [loading,     setLoading]     = useState(true);
   const [saving,      setSaving]      = useState(false);
   const [done,        setDone]        = useState(false);
   const [driveStatus, setDriveStatus] = useState("idle"); // idle | authorizing | creating | done | error
   const [driveUrl,    setDriveUrl]    = useState("");
 
   const [config, setConfig] = useState({
-    theme_primary:   "#1C4A36",
-    theme_secondary: "#58B06C",
-    theme_accent:    "#EBC764",
-    logo_url:        "",
-    access_code:     "",
-    event_nickname:  "",
-    has_minors:      false,
-    allow_unverified: false,
+    theme_primary:              "#1C4A36",
+    theme_secondary:            "#58B06C",
+    theme_accent:               "#EBC764",
+    logo_url:                   "",
+    access_code:                "",
+    event_nickname:             "",
+    has_minors:                 false,
+    allow_unverified:           false,
+    allowPostReleaseAttendance: false,  // NEW — enables OnDeck release flow in Axis mobile
   });
 
   const cf = (key) => (val) => setConfig(c => ({ ...c, [key]: val }));
@@ -44,7 +67,6 @@ export default function ActivationConfig() {
       if (snap.exists()) {
         const d = { id: snap.id, ...snap.data() };
         setIntake(d);
-        // Auto-generate code and nickname from event name
         const name = d.event_name || d.eventName || "";
         setConfig(c => ({
           ...c,
@@ -70,7 +92,6 @@ export default function ActivationConfig() {
     try {
       setDriveStatus("authorizing");
       const accessToken = await getDriveAccessToken();
-
       setDriveStatus("creating");
       driveFolderUrl = await createEventDriveFolder({
         clientName:  intake.client || intake.organization || "",
@@ -84,7 +105,6 @@ export default function ActivationConfig() {
     } catch (err) {
       console.error("Drive folder creation failed:", err);
       setDriveStatus("error");
-      // Non-blocking — we still activate the event, just without the Drive folder
     }
 
     // ── Step 2: Write event to Firestore ──────────────────────────────────
@@ -112,8 +132,11 @@ export default function ActivationConfig() {
         secondary: config.theme_secondary,
         accent:    config.theme_accent,
       },
-      logo_url:     config.logo_url || "",
-      access_code:  config.access_code,
+      logo_url:                   config.logo_url || "",
+      access_code:                config.access_code,
+      has_minors:                 config.has_minors,
+      allow_unverified:           config.allow_unverified,
+      allowPostReleaseAttendance: config.allowPostReleaseAttendance,  // NEW
       activated_by: activeUser,
       activated_at: serverTimestamp(),
     }, { merge: true });
@@ -127,7 +150,11 @@ export default function ActivationConfig() {
     setTimeout(() => navigate(`/event/${eventId}`), 1800);
   };
 
-  if (loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"60vh" }}><Spinner size={32} /></div>;
+  if (loading) return (
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"60vh" }}>
+      <Spinner size={32} />
+    </div>
+  );
 
   const eventName = intake?.event_name || intake?.eventName || "Event";
 
@@ -219,7 +246,6 @@ export default function ActivationConfig() {
             </div>
           ))}
         </div>
-        {/* Live preview */}
         <div style={{ marginTop: 16, padding: "14px 16px", borderRadius: 10, background: config.theme_primary, display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ width: 32, height: 32, borderRadius: "50%", background: config.theme_secondary, flexShrink: 0 }} />
           <div>
@@ -234,79 +260,75 @@ export default function ActivationConfig() {
         </div>
       </Card>
 
-      {/* Minors Flag */}
+      {/* ── Ops Settings — all three toggles consolidated into one card ──────── */}
       <Card style={{ marginBottom: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
+        <SectionHeader title="Ops Settings" subtitle="Floor rules and staffing controls for this event" />
+
+        {/* Minors Present */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "14px 0", borderBottom: `1px solid ${theme.border}` }}>
+          <div style={{ paddingRight: 20, flex: 1 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: theme.text, marginBottom: 3 }}>Minors Present at Event</div>
             <div style={{ fontSize: 12, color: theme.textMuted }}>
               If enabled, uncleared volunteers on the roster will be flagged before event day. Background checks required for all floor staff.
             </div>
           </div>
-          <button
-            onClick={() => {
-              const next = !config.has_minors;
+          <Toggle
+            value={config.has_minors}
+            onChange={(next) => {
               cf("has_minors")(next);
-              if (next) cf("allow_unverified")(false); // minors overrides unverified
+              if (next) cf("allow_unverified")(false);
             }}
-            style={{
-              width: 44, height: 24, borderRadius: 999, border: "none", cursor: "pointer", flexShrink: 0,
-              background: config.has_minors ? theme.primary : theme.border,
-              position: "relative", transition: "background 0.2s",
-            }}
-          >
-            <div style={{
-              width: 18, height: 18, borderRadius: "50%", background: "#fff",
-              position: "absolute", top: 3, transition: "left 0.2s",
-              left: config.has_minors ? 23 : 3,
-            }} />
-          </button>
+          />
         </div>
         {config.has_minors && (
-          <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(139,0,0,0.06)", border: "1px solid rgba(139,0,0,0.15)", fontSize: 12, color: "#8B0000", fontWeight: 600 }}>
+          <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(139,0,0,0.06)", border: "1px solid rgba(139,0,0,0.15)", fontSize: 12, color: "#8B0000", fontWeight: 600, margin: "8px 0" }}>
             ⚠ Minors flag active — uncleared roster members will be flagged in Event Command.
           </div>
         )}
-      </Card>
 
-      {/* Unverified Volunteers */}
-      <Card style={{ marginBottom: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
+        {/* Allow Unverified */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "14px 0", borderBottom: `1px solid ${theme.border}` }}>
+          <div style={{ paddingRight: 20, flex: 1 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: theme.text, marginBottom: 3 }}>Allow Unverified Volunteers</div>
             <div style={{ fontSize: 12, color: theme.textMuted }}>
-              Permits volunteers without a cleared background check to work this event. Limit to low-risk roles only — registration, wayfinding, crowd flow. Cannot be enabled alongside Minors Present.
+              Permits volunteers without a cleared background check. Limit to low-risk roles — registration, wayfinding, crowd flow. Cannot be enabled with Minors Present.
             </div>
           </div>
-          <button
-            onClick={() => {
-              if (config.has_minors) return; // block if minors flag is on
-              cf("allow_unverified")(!config.allow_unverified);
-            }}
-            title={config.has_minors ? "Cannot allow unverified volunteers at events with minors present" : ""}
-            style={{
-              width: 44, height: 24, borderRadius: 999, border: "none", flexShrink: 0,
-              cursor: config.has_minors ? "not-allowed" : "pointer",
-              background: config.has_minors ? theme.border : config.allow_unverified ? "#E07B2A" : theme.border,
-              position: "relative", transition: "background 0.2s",
-              opacity: config.has_minors ? 0.4 : 1,
-            }}
-          >
-            <div style={{
-              width: 18, height: 18, borderRadius: "50%", background: "#fff",
-              position: "absolute", top: 3, transition: "left 0.2s",
-              left: config.allow_unverified && !config.has_minors ? 23 : 3,
-            }} />
-          </button>
+          <Toggle
+            value={config.allow_unverified && !config.has_minors}
+            onChange={(next) => { if (!config.has_minors) cf("allow_unverified")(next); }}
+            disabled={config.has_minors}
+            activeColor="#E07B2A"
+          />
         </div>
         {config.has_minors && (
-          <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(139,0,0,0.06)", border: "1px solid rgba(139,0,0,0.15)", fontSize: 12, color: "#8B0000", fontWeight: 600 }}>
+          <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(139,0,0,0.06)", border: "1px solid rgba(139,0,0,0.15)", fontSize: 12, color: "#8B0000", fontWeight: 600, margin: "8px 0" }}>
             🚫 Cannot allow unverified volunteers — Minors Present is enabled.
           </div>
         )}
         {config.allow_unverified && !config.has_minors && (
-          <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(224,123,42,0.08)", border: "1px solid rgba(224,123,42,0.25)", fontSize: 12, color: "#E07B2A", fontWeight: 600 }}>
+          <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(224,123,42,0.08)", border: "1px solid rgba(224,123,42,0.25)", fontSize: 12, color: "#E07B2A", fontWeight: 600, margin: "8px 0" }}>
             ⚠ Unverified volunteers permitted — assign to low-risk roles only. This decision is logged.
+          </div>
+        )}
+
+        {/* ── NEW: Allow Post-Release Attendance ───────────────────────────── */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "14px 0 0" }}>
+          <div style={{ paddingRight: 20, flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: theme.text, marginBottom: 3 }}>Allow Post-Release Attendance</div>
+            <div style={{ fontSize: 12, color: theme.textMuted }}>
+              Enables the OnDeck release flow in the Axis app. When on, M&M staff can release On-Deck and Reserve volunteers to attendee-facing areas after doors open. Leave off for fully pre-staffed events.
+            </div>
+          </div>
+          <Toggle
+            value={config.allowPostReleaseAttendance}
+            onChange={(next) => cf("allowPostReleaseAttendance")(next)}
+            activeColor={theme.secondary}
+          />
+        </div>
+        {config.allowPostReleaseAttendance && (
+          <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(88,176,108,0.08)", border: "1px solid rgba(88,176,108,0.25)", fontSize: 12, color: "#2d7a46", fontWeight: 600, marginTop: 10 }}>
+            ✓ Post-release attendance enabled — On-Deck and Reserve volunteers can be released live from Event Command.
           </div>
         )}
       </Card>
@@ -317,12 +339,12 @@ export default function ActivationConfig() {
           <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Event Summary</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             {[
-              ["Venue",       intake.venue],
-              ["Location",    intake.location || intake.city],
-              ["Attendance",  intake.attendee_count || intake.expectedAttendees],
-              ["Investment",  intake.confirmed_price],
-              ["POC",         intake.client_poc?.name],
-              ["POC Email",   intake.client_poc?.email],
+              ["Venue",        intake.venue],
+              ["Location",     intake.location || intake.city],
+              ["Attendance",   intake.attendee_count || intake.expectedAttendees],
+              ["Investment",   intake.confirmed_price],
+              ["POC",          intake.client_poc?.name],
+              ["POC Email",    intake.client_poc?.email],
               ["Drive Folder", intake.drive_folder_url ? "Linked ✓" : null],
             ].filter(([, v]) => v).map(([label, val]) => (
               <div key={label}>
@@ -344,9 +366,7 @@ export default function ActivationConfig() {
         }}>
           {driveStatus === "authorizing" && "🔑 Authorizing Google Drive access…"}
           {driveStatus === "creating"    && "📁 Creating client folder and copying templates…"}
-          {driveStatus === "done"        && (
-            <span>✓ Drive folder created — <a href={driveUrl} target="_blank" rel="noreferrer" style={{ color: "#1C4A36", fontWeight: 600 }}>Open in Drive</a></span>
-          )}
+          {driveStatus === "done"        && <span>✓ Drive folder created — <a href={driveUrl} target="_blank" rel="noreferrer" style={{ color: "#1C4A36", fontWeight: 600 }}>Open in Drive</a></span>}
           {driveStatus === "error"       && "⚠ Drive folder creation failed — event will still activate. Add the folder manually in Event Command."}
         </div>
       )}

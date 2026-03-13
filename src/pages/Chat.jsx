@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import {
   collection, getDocs, addDoc, onSnapshot, query,
-  orderBy, serverTimestamp, doc, updateDoc, getDoc
+  orderBy, serverTimestamp, doc, updateDoc, where, limit,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../hooks/useAuth";
@@ -75,35 +75,70 @@ export default function Chat() {
   const bottomRef   = useRef(null);
   const unsubRef    = useRef(null);
   const inputRef    = useRef(null);
+  // ── Guard against double-create on fast remount ───────────────────────────
+  const loadingRef  = useRef(false);
 
   // ── Load conversations ────────────────────────────────────────────────────
   useEffect(() => {
+    // Prevent duplicate execution if effect fires twice (React StrictMode / remount)
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+
     const load = async () => {
       setConvoLoading(true);
       const snap = await getDocs(collection(db, "chat_conversations"));
       let convos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-      // Seed M&M team thread if it doesn't exist yet
-      const teamExists = convos.find(c => c.type === "internal");
-      if (!teamExists) {
-        const ref = await addDoc(collection(db, "chat_conversations"), {
-          name:            "M&M Team",
-          client_name:     "Internal",
-          type:            "internal",
-          created_by:      "system",
-          created_at:      serverTimestamp(),
-          last_message:    null,
-          last_message_at: null,
-          last_sender:     null,
-        });
-        convos = [{ id: ref.id, name: "M&M Team", client_name: "Internal", type: "internal" }, ...convos];
+      // ── Dedup: only create M&M Team thread if none exists (query-first, no race) ──
+      const internalThreads = convos.filter(c => c.type === "internal");
+
+      if (internalThreads.length === 0) {
+        // Double-check with a direct query before writing (handles concurrent mounts)
+        const checkSnap = await getDocs(
+          query(collection(db, "chat_conversations"), where("type", "==", "internal"), limit(1))
+        );
+        if (checkSnap.empty) {
+          const ref = await addDoc(collection(db, "chat_conversations"), {
+            name:            "M&M Team",
+            client_name:     "Internal",
+            type:            "internal",
+            created_by:      "system",
+            created_at:      serverTimestamp(),
+            last_message:    null,
+            last_message_at: null,
+            last_sender:     null,
+          });
+          convos = [{ id: ref.id, name: "M&M Team", client_name: "Internal", type: "internal" }, ...convos];
+        } else {
+          // Thread exists in Firestore but wasn't in our initial snap — add it
+          convos = [{ id: checkSnap.docs[0].id, ...checkSnap.docs[0].data() }, ...convos];
+        }
+      } else if (internalThreads.length > 1) {
+        // ── Dedup: multiple internal threads exist — keep only the oldest, hide the rest ──
+        // Sort by created_at ascending, keep first
+        const sorted = [...internalThreads].sort(
+          (a, b) => (a.created_at?.seconds || 0) - (b.created_at?.seconds || 0)
+        );
+        const keepId = sorted[0].id;
+        convos = convos.filter(c => c.type !== "internal" || c.id === keepId);
       }
 
       // Internal thread always pinned first, then client threads by recency
       const internal = convos.filter(c => c.type === "internal");
       const clients  = convos.filter(c => c.type !== "internal")
         .sort((a, b) => (b.last_message_at?.seconds || 0) - (a.last_message_at?.seconds || 0));
-      setConversations([...internal, ...clients]);
+
+      // ── Dedup client threads: one thread per client_id ────────────────────
+      // Client portal may have created threads with the same client_id — collapse them
+      const seen = new Set();
+      const dedupedClients = clients.filter(c => {
+        const key = c.client_id || c.id; // use client_id if present, else fall back to thread id
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      setConversations([...internal, ...dedupedClients]);
       setConvoLoading(false);
     };
     load();
@@ -138,7 +173,7 @@ export default function Chat() {
     const all = [
       ...aSnap.docs.map(d => ({ id: d.id, type: "agreement", ...d.data() })),
       ...dSnap.docs.map(d => ({ id: d.id, type: "document",  ...d.data() })),
-    ].filter(d => d.url); // only docs with URLs
+    ].filter(d => d.url);
     setLibraryDocs(all);
     setDocsLoading(false);
   };
@@ -148,10 +183,10 @@ export default function Chat() {
     if ((!input.trim() && !attachedDoc) || !activeConvo || sending) return;
     setSending(true);
     const msg = {
-      text:        input.trim() || null,
-      sender:      activeUser,
-      sender_type: "mm",
-      created_at:  serverTimestamp(),
+      text:           input.trim() || null,
+      sender:         activeUser,
+      sender_type:    "mm",
+      created_at:     serverTimestamp(),
       doc_attachment: attachedDoc || null,
     };
     await addDoc(
@@ -195,8 +230,17 @@ export default function Chat() {
       last_sender:     null,
       type:            "client",
     });
-    const newC = { id: ref.id, name: newConvoName.trim(), client_name: newConvoClient.trim() || newConvoName.trim(), type: "client" };
-    setConversations(prev => [newC, ...prev]);
+    const newC = {
+      id:          ref.id,
+      name:        newConvoName.trim(),
+      client_name: newConvoClient.trim() || newConvoName.trim(),
+      type:        "client",
+    };
+    setConversations(prev => {
+      const internal = prev.filter(c => c.type === "internal");
+      const clients  = [newC, ...prev.filter(c => c.type !== "internal")];
+      return [...internal, ...clients];
+    });
     setActiveConvo(newC);
     setShowNewConvo(false);
     setNewConvoName("");
@@ -230,7 +274,6 @@ export default function Chat() {
             }}>+</button>
           </div>
 
-          {/* New conversation form */}
           {showNewConvo && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px", borderRadius: 8, background: theme.background, border: `1px solid ${theme.border}`, marginBottom: 8 }}>
               <input value={newConvoName} onChange={e => setNewConvoName(e.target.value)}
@@ -325,7 +368,7 @@ export default function Chat() {
 
           {/* Thread header */}
           <div style={{ padding: "16px 24px", borderBottom: `1px solid ${theme.border}`, background: "#fff", display: "flex", alignItems: "center", gap: 12 }}>
-            <Avatar name={activeConvo.client_name || activeConvo.name} size={38} bg={theme.secondary} />
+            <Avatar name={activeConvo.client_name || activeConvo.name} size={38} bg={activeConvo.type === "internal" ? theme.primary : theme.secondary} />
             <div>
               <div style={{ fontSize: 15, fontWeight: 700, color: theme.primary }}>{activeConvo.name}</div>
               {activeConvo.client_name && activeConvo.client_name !== activeConvo.name && (
@@ -349,8 +392,8 @@ export default function Chat() {
                 <div style={{ fontSize: 13, color: theme.textMuted }}>No messages yet — start the conversation.</div>
               </div>
             ) : messages.map(msg => {
-              const isMM     = msg.sender_type === "mm";
-              const isMe     = msg.sender === activeUser;
+              const isMM = msg.sender_type === "mm";
+              const isMe = msg.sender === activeUser;
               const senderBg = isMM ? theme.primary : theme.secondary;
               return (
                 <div key={msg.id} style={{ display: "flex", gap: 10, flexDirection: isMM ? "row-reverse" : "row", alignItems: "flex-end" }}>

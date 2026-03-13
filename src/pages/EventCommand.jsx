@@ -26,6 +26,16 @@ const CHECKLISTS = {
       ],
     },
     {
+      section: "Venue & Floor Planning",
+      items: [
+        { key: "venue_poc_confirmed",    label: "Venue / event ops POC confirmed" },
+        { key: "venue_walkthrough",      label: "Venue walkthrough completed", required: true, note: "Staffing cannot begin without this" },
+        { key: "floor_config_complete",  label: "Floor + zone configuration built in Axis App Setup", required: true, note: "Required before shifts can be created" },
+        { key: "run_of_show_received",   label: "Run of show received from client" },
+        { key: "load_in_scoped",         label: "Load in/out scope confirmed (add-on if applicable)" },
+      ],
+    },
+    {
       section: "Event Prep",
       items: [
         { key: "orientations_scheduled", label: "Orientations scheduled" },
@@ -107,6 +117,16 @@ const CHECKLISTS = {
       items: [
         { key: "recruiting_link_sent", label: "Recruiting app link sent out" },
         { key: "onboarding_complete",  label: "Onboarding completed" },
+      ],
+    },
+    {
+      section: "Venue & Floor Planning",
+      items: [
+        { key: "venue_poc_confirmed",    label: "Venue / event ops POC confirmed" },
+        { key: "venue_walkthrough",      label: "Venue walkthrough completed", required: true, note: "Staffing cannot begin without this" },
+        { key: "floor_config_complete",  label: "Floor + zone configuration built in Axis App Setup", required: true, note: "Required before shifts can be created" },
+        { key: "run_of_show_received",   label: "Run of show received from client" },
+        { key: "load_in_scoped",         label: "Load in/out scope confirmed (add-on if applicable)" },
       ],
     },
     {
@@ -193,10 +213,15 @@ const SCORE_CONFIG = {
   VOLUNTEERED_BEFORE:       20,
   NOT_FIRST_YEAR:           10,
   WANTS_LEADERSHIP:         20,
+  WANTS_OPS_LEAD:           10,
   OK_BEING_POC:             10,
+  COMFORT_WITH_CONFLICT:    10,
   WANTS_MENTORSHIP:         10,
   HAS_CRITICAL_COMFORT:     10,
   TECH_COMFORTABLE:          5,
+  DIRECTING_COMFORT:         5,
+  HIGH_ENERGY_COVERAGE:      5,
+  EXTENSIVE_MULTI_EVENT:    35,
   ALL_ORIENTATIONS:         20,
   ALL_TRAININGS:            10,
 };
@@ -214,10 +239,14 @@ const calculateLeadershipScore = (profile, attendance = {}) => {
   let score = 0;
   const breakdown = [];
 
-  if (profile.volunteeredYears >= 2) {
+  const exp = profile.eventExperience || "";
+  if (exp.includes("Extensive multi-event")) {
+    score += SCORE_CONFIG.EXTENSIVE_MULTI_EVENT;
+    breakdown.push({ label: "Extensive multi-event experience", points: 35 });
+  } else if (profile.volunteeredYears >= 2 || exp.includes("2+ years")) {
     score += SCORE_CONFIG.VOLUNTEERED_2_PLUS_YEARS;
     breakdown.push({ label: "Volunteered 2+ years", points: 30 });
-  } else if (profile.volunteeredBefore) {
+  } else if (profile.volunteeredBefore || exp.includes("1 year") || exp.includes("other events")) {
     score += SCORE_CONFIG.VOLUNTEERED_BEFORE;
     breakdown.push({ label: "Volunteered before", points: 20 });
   } else if (!profile.firstYear) {
@@ -225,15 +254,19 @@ const calculateLeadershipScore = (profile, attendance = {}) => {
     breakdown.push({ label: "Not first year", points: 10 });
   }
 
-  if (profile.wantsLeadership) { score += SCORE_CONFIG.WANTS_LEADERSHIP; breakdown.push({ label: "Wants leadership", points: 20 }); }
-  if (profile.okBeingPOC)      { score += SCORE_CONFIG.OK_BEING_POC;      breakdown.push({ label: "OK being POC",      points: 10 }); }
-  if (profile.wantsMentorship) { score += SCORE_CONFIG.WANTS_MENTORSHIP;  breakdown.push({ label: "Wants to mentor",   points: 10 }); }
+  if (profile.wantsLeadership)     { score += SCORE_CONFIG.WANTS_LEADERSHIP;      breakdown.push({ label: "Wants leadership",                points: 20 }); }
+  if (profile.wantsOpsLead)        { score += SCORE_CONFIG.WANTS_OPS_LEAD;        breakdown.push({ label: "Interested in Ops Lead",          points: 10 }); }
+  if (profile.okBeingPOC)          { score += SCORE_CONFIG.OK_BEING_POC;          breakdown.push({ label: "OK being POC",                    points: 10 }); }
+  if (profile.comfortWithConflict) { score += SCORE_CONFIG.COMFORT_WITH_CONFLICT; breakdown.push({ label: "Comfortable addressing conflict", points: 10 }); }
+  if (profile.wantsMentorship)     { score += SCORE_CONFIG.WANTS_MENTORSHIP;      breakdown.push({ label: "Wants to mentor",                 points: 10 }); }
 
   const cz = profile.comfortZones || [];
   const hasCritical = cz.includes("Talking to attendees") && cz.includes("Problem solving / putting out fires");
   const isTech      = cz.includes("Tech (devices, check-in, scanners)");
-  if (hasCritical) { score += SCORE_CONFIG.HAS_CRITICAL_COMFORT; breakdown.push({ label: "Critical comfort zones", points: 10 }); }
-  if (isTech)      { score += SCORE_CONFIG.TECH_COMFORTABLE;      breakdown.push({ label: "Tech comfortable",       points:  5 }); }
+  if (hasCritical) { score += SCORE_CONFIG.HAS_CRITICAL_COMFORT; breakdown.push({ label: "Critical comfort zones",              points: 10 }); }
+  if (isTech)      { score += SCORE_CONFIG.TECH_COMFORTABLE;      breakdown.push({ label: "Tech comfortable",                   points:  5 }); }
+  if (cz.includes("Directing people / giving clear instructions"))        { score += SCORE_CONFIG.DIRECTING_COMFORT;    breakdown.push({ label: "Comfortable directing others", points: 5 }); }
+  if (cz.includes("High-energy floor coverage (full shift on feet)"))     { score += SCORE_CONFIG.HIGH_ENERGY_COVERAGE; breakdown.push({ label: "High-energy floor coverage",   points: 5 }); }
 
   if (attendance.orientationsAttended === attendance.totalOrientations && attendance.totalOrientations > 0) {
     score += SCORE_CONFIG.ALL_ORIENTATIONS; breakdown.push({ label: "All orientations", points: 20 });
@@ -244,7 +277,13 @@ const calculateLeadershipScore = (profile, attendance = {}) => {
 
   // Ops Lead eligibility — requires TL-confirmed level + full critical skill stack + mentorship
   const cz3 = cz.includes("Talking to attendees") && cz.includes("Problem solving / putting out fires") && isTech;
-  const opsLeadEligible = score >= 90 && profile.wantsLeadership && profile.okBeingPOC && profile.wantsMentorship && cz3;
+  const opsLeadEligible = score >= 90
+    && profile.wantsLeadership
+    && (profile.wantsOpsLead || false)
+    && profile.okBeingPOC
+    && profile.wantsMentorship
+    && (profile.comfortWithConflict || false)
+    && cz3;
 
   const tlTier = Object.values(TL_TIERS).find(t => score >= t.min) || TL_TIERS.NOT_READY;
 
@@ -424,11 +463,41 @@ export default function EventCommand() {
   const [staffFilter,    setStaffFilter]    = useState("all"); // all | tl_eligible | ops_eligible | assigned
   const [promotingSaving, setPromotingSaving] = useState(false);
 
+  // Pre-event staff planning
+  const [planningLoading,   setPlanningLoading]   = useState(false);
+  const [planningProfiles,  setPlanningProfiles]  = useState([]);  // scored volunteer profiles
+  const [planningZones,     setPlanningZones]      = useState([]);  // floors/zones from event doc
+  const [zoneAssignments,   setZoneAssignments]    = useState({});  // { zoneId: { tl: uid|null, ops: uid|null, volunteers: [uid] } }
+  const [planningFilter,    setPlanningFilter]     = useState("tl_eligible"); // all | tl_eligible | ops_eligible | assigned
+  const [planSaving,        setPlanSaving]         = useState(false);
+  const [planSaved,         setPlanSaved]          = useState(false);
+
   // Client staff
   const [clientStaff,    setClientStaff]    = useState([]);
   const [newClientStaff, setNewClientStaff] = useState({ name: "", title: "", email: "", phone: "", needs_app_access: false });
   const [clientStaffSaving, setClientStaffSaving] = useState(false);
   const [activeTab, setActiveTab] = useState("checklist"); // checklist | staff | client_staff
+
+  // App Setup
+  const [appSetup,        setAppSetup]        = useState({
+    schedule_mode: "self_select",   // "self_select" | "managed"
+    floors: [],                     // [{ id, name, zones: [{ id, name }] }]
+    event_staff: [],
+  });
+  const [newFloorName,    setNewFloorName]    = useState("");
+  const [newZoneInputs,   setNewZoneInputs]   = useState({});  // { floorId: "" }
+  const [appSetupLoading, setAppSetupLoading] = useState(false);
+  const [appSetupSaving,  setAppSetupSaving]  = useState(false);
+  const [appSetupSaved,   setAppSetupSaved]   = useState(false);
+  const [newStaffEntry,   setNewStaffEntry]   = useState({ name: "", pin: "", last4: "", pillar: "P1" });
+  const [customPerms,     setCustomPerms]     = useState({
+    check_in_volunteers: false,
+    manage_shifts:       false,
+    send_alerts:         false,
+    view_incidents:      false,
+    view_floor_layout:   false,
+    manual_check_in:     false,
+  });
 
   // Drive docs
   const [driveDocs,     setDriveDocs]     = useState([]);
@@ -558,7 +627,6 @@ export default function EventCommand() {
   };
 
   const loadShifts = async () => {
-    if (shifts.length > 0) return;
     setShiftsLoading(true);
     const snap = await getDocs(collection(db, "events", eventId, "shifts"));
     setShifts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -749,10 +817,171 @@ export default function EventCommand() {
     setExportingPDF(false);
   };
 
+  const loadPlanningData = async () => {
+    if (!event?.id) return;
+    setPlanningLoading(true);
+    try {
+      // Load volunteer profiles
+      const snap = await getDocs(collection(db, "volunteerProfiles"));
+      const profiles = [];
+      for (const d of snap.docs) {
+        const p = d.data();
+        if (!p.uid) continue;
+        const { score, breakdown, tlTier, opsLeadEligible } = calculateLeadershipScore(p);
+        profiles.push({ uid: p.uid, name: p.name || "Unknown", profile: p, score, breakdown, tlTier, opsLeadEligible });
+      }
+      profiles.sort((a, b) => b.score - a.score);
+      setPlanningProfiles(profiles);
+
+      // Load zones from event doc (floors array) + existing plan
+      const eventSnap = await getDoc(doc(db, "events", event.id));
+      const eventData = eventSnap.exists() ? eventSnap.data() : {};
+      const floors = eventData.floors || [];
+      // Flatten floors → zones, carrying floor context
+      const flatZones = floors.length
+        ? floors.flatMap(fl => (fl.zones || []).map(z => ({
+            id:        `${fl.id}__${z.id}`,
+            name:      z.name,
+            floorId:   fl.id,
+            floorName: fl.name,
+            label:     floors.length > 1 ? `${fl.name} › ${z.name}` : z.name,
+          })))
+        : [
+            { id: "zone_a", name: "Zone A", label: "Zone A" },
+            { id: "zone_b", name: "Zone B", label: "Zone B" },
+            { id: "zone_c", name: "Zone C", label: "Zone C" },
+          ];
+      setPlanningZones(flatZones);
+
+      // Load existing assignments
+      const planSnap = await getDoc(doc(db, "events", event.id, "staff_plan", "assignments"));
+      if (planSnap.exists()) setZoneAssignments(planSnap.data().zones || {});
+      else setZoneAssignments({});
+
+    } catch (e) {
+      console.error("loadPlanningData error:", e);
+    } finally {
+      setPlanningLoading(false);
+    }
+  };
+
+  const savePlan = async () => {
+    if (!event?.id) return;
+    setPlanSaving(true);
+    try {
+      await setDoc(doc(db, "events", event.id, "staff_plan", "assignments"), {
+        zones: zoneAssignments,
+        updated_at: new Date().toISOString(),
+        updated_by: "desktop",
+      });
+      // Write zone assignments to each volunteer's event_history for Insights
+      for (const [zoneId, asgn] of Object.entries(zoneAssignments)) {
+        const allUids = [
+          ...(asgn.tl   ? [{ uid: asgn.tl,  role: "team_lead" }] : []),
+          ...(asgn.ops  ? [{ uid: asgn.ops, role: "ops_lead"  }] : []),
+          ...(asgn.volunteers || []).map(uid => ({ uid, role: "volunteer" })),
+        ];
+        for (const { uid, role } of allUids) {
+          await setDoc(doc(db, "volunteerProfiles", uid, "event_history", event.id), {
+            event_id:      event.id,
+            event_name:    event.name || "",
+            zone_assigned: zoneId,
+            role_assigned: role,
+            planned_at:    new Date().toISOString(),
+          }, { merge: true });
+        }
+      }
+      setPlanSaved(true);
+      setTimeout(() => setPlanSaved(false), 2500);
+    } catch (e) {
+      console.error("savePlan error:", e);
+    } finally {
+      setPlanSaving(false);
+    }
+  };
+
+  const assignToZone = (zoneId, uid, slot) => {
+    // slot: "tl" | "ops" | "volunteer"
+    setZoneAssignments(prev => {
+      const zone = { tl: null, ops: null, volunteers: [], ...(prev[zoneId] || {}) };
+      if (slot === "tl")        zone.tl  = zone.tl  === uid ? null : uid;
+      else if (slot === "ops")  zone.ops = zone.ops  === uid ? null : uid;
+      else {
+        const idx = zone.volunteers.indexOf(uid);
+        if (idx >= 0) zone.volunteers.splice(idx, 1);
+        else zone.volunteers.push(uid);
+      }
+      return { ...prev, [zoneId]: zone };
+    });
+  };
+
+  const getAssignedZone = (uid) => {
+    for (const [zoneId, asgn] of Object.entries(zoneAssignments)) {
+      if (asgn.tl === uid || asgn.ops === uid || (asgn.volunteers || []).includes(uid))
+        return zoneId;
+    }
+    return null;
+  };
+
+  const loadAppSetup = async () => {
+    if (!event?.id) return;
+    setAppSetupLoading(true);
+    try {
+      const snap = await getDoc(doc(db, "events", event.id));
+      if (snap.exists()) {
+        const d = snap.data();
+        setAppSetup({
+          schedule_mode: d.schedule_mode || "self_select",
+          floors:        d.floors        || [],
+          event_staff:   d.event_staff   || [],
+        });
+      }
+    } catch (e) { console.error("loadAppSetup:", e); }
+    finally { setAppSetupLoading(false); }
+  };
+
+  const saveAppSetup = async () => {
+    if (!event?.id) return;
+    setAppSetupSaving(true);
+    try {
+      await updateDoc(doc(db, "events", event.id), {
+        schedule_mode: appSetup.schedule_mode,
+        floors:        appSetup.floors,
+        event_staff:   appSetup.event_staff,
+      });
+      setAppSetupSaved(true);
+      setTimeout(() => setAppSetupSaved(false), 2500);
+    } catch (e) { console.error("saveAppSetup:", e); }
+    finally { setAppSetupSaving(false); }
+  };
+
+  const PILLAR_DEFAULT_PERMS = {
+    P1: { check_in_volunteers: false, manage_shifts: false, send_alerts: false, view_incidents: false, view_floor_layout: false, manual_check_in: false },
+    P3: { check_in_volunteers: true,  manage_shifts: false, send_alerts: false, view_incidents: true,  view_floor_layout: true,  manual_check_in: true  },
+    P4: { check_in_volunteers: true,  manage_shifts: true,  send_alerts: true,  view_incidents: true,  view_floor_layout: true,  manual_check_in: true  },
+  };
+
+  const addEventStaffEntry = () => {
+    if (!newStaffEntry.name.trim() || !newStaffEntry.pin.trim()) return;
+    const permissions = newStaffEntry.pillar === "Custom"
+      ? { ...customPerms }
+      : (PILLAR_DEFAULT_PERMS[newStaffEntry.pillar] || PILLAR_DEFAULT_PERMS.P1);
+    const entry = { ...newStaffEntry, permissions };
+    setAppSetup(prev => ({ ...prev, event_staff: [...prev.event_staff, entry] }));
+    setNewStaffEntry({ name: "", pin: "", last4: "", pillar: "P1" });
+    setCustomPerms({ check_in_volunteers: false, manage_shifts: false, send_alerts: false, view_incidents: false, view_floor_layout: false, manual_check_in: false });
+  };
+
+  const removeEventStaffEntry = (idx) => {
+    setAppSetup(prev => ({ ...prev, event_staff: prev.event_staff.filter((_, i) => i !== idx) }));
+  };
+
   const handleTabChange = (tab) => {
     setActiveTab(tab);
-    if (tab === "staff")   loadStaffProfiles();
-    if (tab === "shifts")  loadShifts();
+    if (tab === "staff")      loadStaffProfiles();
+    if (tab === "planning")   { loadPlanningData(); loadShifts(); }
+    if (tab === "app_setup")   loadAppSetup();
+    if (tab === "shifts")  { loadShifts(); if (!planningZones.length) loadPlanningData(); }
     if (tab === "reports") { setActiveReport(null); setReportData([]); }
   };
 
@@ -1091,6 +1320,8 @@ export default function EventCommand() {
               { key: "shifts",       label: "Shifts" },
               { key: "staff",        label: `Staff Roster` },
               { key: "client_staff", label: "Client Staff" },
+              { key: "app_setup",    label: "⚙️ App Setup" },
+              { key: "planning",     label: "🗂 Staff Planning" },
               { key: "reports",      label: "Reports" },
             ].map(t => (
               <button key={t.key} onClick={() => handleTabChange(t.key)} style={{
@@ -1193,7 +1424,7 @@ export default function EventCommand() {
                 <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>
                   {section}
                 </div>
-                {items.map(({ key, label }) => {
+                {items.map((item) => { const { key, label } = item;
                   const done = !!checklist[key];
                   return (
                     <div
@@ -1219,6 +1450,9 @@ export default function EventCommand() {
                         fontSize: 14, fontWeight: done ? 600 : 400,
                         color: done ? theme.text : theme.textMuted,
                       }}>{label}</span>
+                      {item.required && !done && (
+                        <span style={{ fontSize: 10, fontWeight: 700, color: "#e74c3c", marginLeft: 8, background: "#e74c3c11", padding: "1px 6px", borderRadius: 999 }}>Required</span>
+                      )}
                       {done && checklist[`${key}_by`] && (
                         <span style={{ fontSize: 11, color: theme.textMuted, marginLeft: "auto" }}>by {checklist[`${key}_by`]}</span>
                       )}
@@ -1385,7 +1619,7 @@ export default function EventCommand() {
                         <div style={{ fontSize: 14, fontWeight: 700, color: theme.text, marginBottom: 2 }}>{shift.name}</div>
                         <div style={{ fontSize: 12, color: theme.textMuted }}>
                           {shift.start_time} – {shift.end_time}
-                          {shift.zone      ? ` · ${shift.zone}`      : ""}
+                          {shift.zone ? ` · ${planningZones.find(z => z.id === shift.zone)?.name || shift.zone}` : ""}
                           {shift.role_type ? ` · ${shift.role_type}` : ""}
                         </div>
                       </div>
@@ -1420,7 +1654,6 @@ export default function EventCommand() {
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
                   {[
                     { key: "name",      placeholder: "Shift name *  (e.g. Morning Ingress)" },
-                    { key: "zone",      placeholder: "Zone / Area  (e.g. Registration)" },
                     { key: "start_time",placeholder: "Start time *  (e.g. 8:00 AM)" },
                     { key: "end_time",  placeholder: "End time *  (e.g. 12:00 PM)" },
                     { key: "capacity",  placeholder: "Volunteer capacity  (e.g. 8)" },
@@ -1433,6 +1666,18 @@ export default function EventCommand() {
                       style={{ padding: "8px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none", color: theme.text, background: "#fff" }}
                     />
                   ))}
+                  {/* Zone dropdown — pulls from staff plan zones */}
+                  <select
+                    value={newShift.zone}
+                    onChange={e => setNewShift(p => ({ ...p, zone: e.target.value }))}
+                    style={{ padding: "8px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none", color: newShift.zone ? theme.text : theme.textMuted, background: "#fff" }}
+                  >
+                    <option value="">Zone / Area (select one)</option>
+                    {planningZones.map(z => (
+                      <option key={z.id} value={z.id}>{z.label || z.name}</option>
+                    ))}
+                    <option value="unzoned">General / No specific zone</option>
+                  </select>
                 </div>
                 <Button size="sm" onClick={addShift}
                   disabled={!newShift.name.trim() || !newShift.start_time || !newShift.end_time || shiftSaving}>
@@ -1441,6 +1686,595 @@ export default function EventCommand() {
               </div>
             </Card>
           )}
+
+
+
+          {/* ── APP SETUP TAB ── */}
+          {activeTab === "app_setup" && (
+            <div>
+              {/* Header */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: theme.text }}>App Setup</div>
+                  <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 2 }}>
+                    Configure how this event runs in the Axis mobile app.
+                  </div>
+                </div>
+                <button
+                  onClick={saveAppSetup}
+                  disabled={appSetupSaving}
+                  style={{
+                    padding: "8px 20px", borderRadius: 8, border: "none",
+                    background: appSetupSaved ? "#27ae60" : primaryColor,
+                    color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer",
+                    fontFamily: "'DM Sans', sans-serif", minWidth: 110,
+                  }}
+                >{appSetupSaving ? "Saving…" : appSetupSaved ? "✓ Saved" : "Save Setup"}</button>
+              </div>
+
+              {appSetupLoading ? (
+                <div style={{ textAlign: "center", padding: "40px 0", color: theme.textMuted }}>Loading…</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+                  {/* Scheduling Mode */}
+                  <Card>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Scheduling Mode</div>
+                    <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
+                      Controls how volunteers interact with shifts in the mobile app.
+                    </div>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {[
+                        { value: "self_select", label: "Volunteer Self-Select", desc: "Volunteers see open shifts and claim their own" },
+                        { value: "managed",     label: "M&M Managed",           desc: "Volunteers see only their assigned shift, no picker" },
+                      ].map(opt => (
+                        <div
+                          key={opt.value}
+                          onClick={() => setAppSetup(p => ({ ...p, schedule_mode: opt.value }))}
+                          style={{
+                            flex: 1, padding: "14px 16px", borderRadius: 10, cursor: "pointer",
+                            border: `2px solid ${appSetup.schedule_mode === opt.value ? primaryColor : theme.border}`,
+                            background: appSetup.schedule_mode === opt.value ? `${primaryColor}0d` : "#fff",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                            <div style={{
+                              width: 14, height: 14, borderRadius: "50%",
+                              border: `2px solid ${primaryColor}`,
+                              background: appSetup.schedule_mode === opt.value ? primaryColor : "transparent",
+                              flexShrink: 0,
+                            }} />
+                            <div style={{ fontSize: 13, fontWeight: 700, color: theme.text }}>{opt.label}</div>
+                          </div>
+                          <div style={{ fontSize: 11, color: theme.textMuted, paddingLeft: 22 }}>{opt.desc}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+
+
+                  {/* Floor & Zone Configuration */}
+                  <Card>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Floor & Zone Configuration</div>
+                    <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6, lineHeight: 1.6 }}>
+                      Build your venue layout. Add floors first, then zones within each floor. This must be completed before shifts can be created.
+                    </div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#e07b2a", background: "#e07b2a11", padding: "8px 12px", borderRadius: 8, marginBottom: 16 }}>
+                      ⚠ Venue walkthrough must be completed before configuring floors. See checklist.
+                    </div>
+
+                    {/* Existing floors */}
+                    {(appSetup.floors || []).length === 0 ? (
+                      <div style={{ fontSize: 13, color: theme.textMuted, fontStyle: "italic", marginBottom: 16 }}>No floors configured yet.</div>
+                    ) : (
+                      <div style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+                        {(appSetup.floors || []).map((floor, fi) => (
+                          <div key={floor.id} style={{ background: theme.background, borderRadius: 10, padding: "12px 14px", border: `1px solid ${theme.border}` }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: theme.text }}>🏢 {floor.name}</div>
+                              <button
+                                onClick={() => setAppSetup(prev => ({ ...prev, floors: prev.floors.filter((_, i) => i !== fi) }))}
+                                style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, color: theme.textMuted }}
+                              >×</button>
+                            </div>
+
+                            {/* Zones on this floor */}
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                              {(floor.zones || []).map((zone, zi) => (
+                                <div key={zone.id} style={{ display: "flex", alignItems: "center", gap: 4, background: `${primaryColor}12`, border: `1px solid ${primaryColor}33`, borderRadius: 999, padding: "3px 10px" }}>
+                                  <span style={{ fontSize: 12, color: primaryColor, fontWeight: 600 }}>{zone.name}</span>
+                                  <button
+                                    onClick={() => setAppSetup(prev => ({
+                                      ...prev,
+                                      floors: prev.floors.map((fl, i) => i !== fi ? fl : {
+                                        ...fl, zones: fl.zones.filter((_, j) => j !== zi)
+                                      })
+                                    }))}
+                                    style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: theme.textMuted, padding: "0 0 0 2px", lineHeight: 1 }}
+                                  >×</button>
+                                </div>
+                              ))}
+                              {!(floor.zones || []).length && (
+                                <span style={{ fontSize: 11, color: theme.textMuted, fontStyle: "italic" }}>No zones yet</span>
+                              )}
+                            </div>
+
+                            {/* Add zone to this floor */}
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <input
+                                value={newZoneInputs[floor.id] || ""}
+                                onChange={e => setNewZoneInputs(prev => ({ ...prev, [floor.id]: e.target.value }))}
+                                placeholder="Zone name (e.g. Registration)"
+                                onKeyDown={e => {
+                                  if (e.key === "Enter") {
+                                    const name = (newZoneInputs[floor.id] || "").trim();
+                                    if (!name) return;
+                                    const zoneId = name.toLowerCase().replace(/\s+/g, "_");
+                                    setAppSetup(prev => ({
+                                      ...prev,
+                                      floors: prev.floors.map((fl, i) => i !== fi ? fl : {
+                                        ...fl, zones: [...(fl.zones || []), { id: zoneId, name }]
+                                      })
+                                    }));
+                                    setNewZoneInputs(prev => ({ ...prev, [floor.id]: "" }));
+                                  }
+                                }}
+                                style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none", color: theme.text }}
+                              />
+                              <button
+                                onClick={() => {
+                                  const name = (newZoneInputs[floor.id] || "").trim();
+                                  if (!name) return;
+                                  const zoneId = name.toLowerCase().replace(/\s+/g, "_");
+                                  setAppSetup(prev => ({
+                                    ...prev,
+                                    floors: prev.floors.map((fl, i) => i !== fi ? fl : {
+                                      ...fl, zones: [...(fl.zones || []), { id: zoneId, name }]
+                                    })
+                                  }));
+                                  setNewZoneInputs(prev => ({ ...prev, [floor.id]: "" }));
+                                }}
+                                style={{ padding: "6px 12px", borderRadius: 6, background: primaryColor, color: "#fff", border: "none", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}
+                              >+ Zone</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Add floor */}
+                    <div style={{ fontSize: 11, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Add Floor</div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input
+                        value={newFloorName}
+                        onChange={e => setNewFloorName(e.target.value)}
+                        placeholder="Floor name (e.g. Floor 1, Rooftop, Main Level)"
+                        onKeyDown={e => {
+                          if (e.key === "Enter") {
+                            const name = newFloorName.trim();
+                            if (!name) return;
+                            const id = `floor_${Date.now()}`;
+                            setAppSetup(prev => ({ ...prev, floors: [...(prev.floors || []), { id, name, zones: [] }] }));
+                            setNewFloorName("");
+                          }
+                        }}
+                        style={{ flex: 1, padding: "8px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none", color: theme.text }}
+                      />
+                      <Button size="sm" onClick={() => {
+                        const name = newFloorName.trim();
+                        if (!name) return;
+                        const id = `floor_${Date.now()}`;
+                        setAppSetup(prev => ({ ...prev, floors: [...(prev.floors || []), { id, name, zones: [] }] }));
+                        setNewFloorName("");
+                      }}>+ Add Floor</Button>
+                    </div>
+                  </Card>
+
+                  {/* Event Staff Credentials */}
+                  <Card>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Event Staff Credentials</div>
+                    <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 16, lineHeight: 1.6 }}>
+                      PIN credentials for client-side event staff (P1–P4). These gate access to specific app features based on pillar level.
+                    </div>
+
+                    {/* Pillar reference */}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 16 }}>
+                      {[
+                        { p: "P1", label: "Observer",     desc: "View roster only",              color: "#95a5a6" },
+                        { p: "P3", label: "Floor Staff",  desc: "Check-in + view shifts",        color: "#3498db" },
+                        { p: "P4", label: "Event Lead",   desc: "Full access incl. alerts",      color: "#27ae60" },
+                      ].map(({ p, label, desc, color }) => (
+                        <div key={p} style={{ padding: "10px 12px", borderRadius: 8, background: color + "15", border: `1px solid ${color}44` }}>
+                          <div style={{ fontSize: 12, fontWeight: 800, color }}>{p}</div>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: theme.text, marginTop: 2 }}>{label}</div>
+                          <div style={{ fontSize: 10, color: theme.textMuted, marginTop: 1 }}>{desc}</div>
+                        </div>
+                      ))}
+                      <div style={{ padding: "10px 12px", borderRadius: 8, background: theme.background, border: `1px solid ${theme.border}` }}>
+                        <div style={{ fontSize: 11, color: theme.textMuted }}>P2 = custom — set per person</div>
+                      </div>
+                    </div>
+
+                    {/* Existing staff */}
+                    {appSetup.event_staff.length === 0 ? (
+                      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16, fontStyle: "italic" }}>No event staff added yet.</div>
+                    ) : (
+                      <div style={{ marginBottom: 16 }}>
+                        {appSetup.event_staff.map((s, idx) => (
+                          <div key={idx} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: `1px solid ${theme.border}` }}>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: theme.text }}>{s.name}</div>
+                              <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 4 }}>
+                                PIN: {s.pin}{s.last4 ? ` · Last 4: ${s.last4}` : ""} · {s.pillar}
+                              </div>
+                              {s.permissions && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                                  {Object.entries(s.permissions).filter(([, v]) => v).map(([k]) => (
+                                    <span key={k} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 999, background: `${primaryColor}12`, color: primaryColor, fontWeight: 600 }}>
+                                      {k.replace(/_/g, " ")}
+                                    </span>
+                                  ))}
+                                  {!Object.values(s.permissions).some(Boolean) && (
+                                    <span style={{ fontSize: 10, color: theme.textMuted, fontStyle: "italic" }}>View only</span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <span style={{
+                              fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                              background: s.pillar === "P4" ? "#27ae6022" : s.pillar === "P3" ? "#3498db22" : s.pillar === "Custom" ? `${primaryColor}18` : "#95a5a622",
+                              color:      s.pillar === "P4" ? "#27ae60"   : s.pillar === "P3" ? "#3498db"   : s.pillar === "Custom" ? primaryColor            : "#95a5a6",
+                            }}>{s.pillar}</span>
+                            <button
+                              onClick={() => removeEventStaffEntry(idx)}
+                              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, color: theme.textMuted }}
+                            >×</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Add new staff */}
+                    <div style={{ fontSize: 11, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Add Staff Member</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
+                      {[
+                        { key: "name",  placeholder: "Full name *" },
+                        { key: "pin",   placeholder: "PIN *" },
+                        { key: "last4", placeholder: "Last 4 phone (P4)" },
+                      ].map(({ key, placeholder }) => (
+                        <input key={key}
+                          value={newStaffEntry[key]}
+                          onChange={e => setNewStaffEntry(p => ({ ...p, [key]: e.target.value }))}
+                          placeholder={placeholder}
+                          style={{ padding: "8px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none", color: theme.text }}
+                        />
+                      ))}
+                      <select
+                        value={newStaffEntry.pillar}
+                        onChange={e => setNewStaffEntry(p => ({ ...p, pillar: e.target.value }))}
+                        style={{ padding: "8px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none", color: theme.text }}
+                      >
+                        <option value="P1">P1 — Observer</option>
+                        <option value="P3">P3 — Floor Staff</option>
+                        <option value="P4">P4 — Event Lead</option>
+                        <option value="Custom">Custom — Set manually</option>
+                      </select>
+                    </div>
+
+                    {/* Custom permission toggles — shown only when Custom pillar selected */}
+                    {newStaffEntry.pillar === "Custom" && (
+                      <div style={{ marginTop: 12, padding: "14px 16px", borderRadius: 10, background: theme.background, border: `1.5px solid ${primaryColor}44` }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: primaryColor, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Custom Permissions</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0 }}>
+                          {[
+                            ["check_in_volunteers", "Check in volunteers"],
+                            ["manual_check_in",     "Manual check-in override"],
+                            ["view_floor_layout",   "View floor layout"],
+                            ["view_incidents",      "View incident reports"],
+                            ["manage_shifts",       "Manage shifts"],
+                            ["send_alerts",         "Send alerts"],
+                          ].map(([key, label]) => (
+                            <div key={key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 8px", borderBottom: `1px solid ${theme.border}` }}>
+                              <span style={{ fontSize: 12, color: theme.text }}>{label}</span>
+                              <div
+                                onClick={() => setCustomPerms(p => ({ ...p, [key]: !p[key] }))}
+                                style={{
+                                  width: 36, height: 20, borderRadius: 999, cursor: "pointer",
+                                  background: customPerms[key] ? primaryColor : theme.border,
+                                  position: "relative", transition: "background 0.2s", flexShrink: 0,
+                                }}
+                              >
+                                <div style={{
+                                  position: "absolute", top: 3, left: customPerms[key] ? 18 : 3,
+                                  width: 14, height: 14, borderRadius: "50%", background: "#fff",
+                                  transition: "left 0.2s",
+                                }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <Button size="sm" onClick={addEventStaffEntry} disabled={!newStaffEntry.name.trim() || !newStaffEntry.pin.trim()}>
+                      + Add Staff Member
+                    </Button>
+                  </Card>
+
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── STAFF PLANNING TAB ── */}
+          {activeTab === "planning" && (() => {
+            const tc = (score) => {
+              if (score >= 90) return "#27ae60";
+              if (score >= 60) return "#3498db";
+              if (score >= 40) return "#f39c12";
+              return "#95a5a6";
+            };
+
+            const filteredPlanners = planningProfiles.filter(s => {
+              if (planningFilter === "tl_eligible")  return s.score >= 60;
+              if (planningFilter === "ops_eligible") return s.opsLeadEligible;
+              if (planningFilter === "assigned")     return getAssignedZone(s.uid) !== null;
+              return true;
+            });
+
+            return (
+              <div>
+                {/* Header */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: theme.text }}>Pre-Event Staff Planning</div>
+                    <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 2 }}>
+                      Assign team leads and ops leads to zones before the event. Assignments feed directly into Axis Insights.
+                    </div>
+                  </div>
+                  <button
+                    onClick={savePlan}
+                    disabled={planSaving}
+                    style={{
+                      padding: "8px 20px", borderRadius: 8, border: "none",
+                      background: planSaved ? "#27ae60" : primaryColor,
+                      color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer",
+                      fontFamily: "'DM Sans', sans-serif", minWidth: 110,
+                    }}
+                  >{planSaving ? "Saving…" : planSaved ? "✓ Saved" : "Save Plan"}</button>
+                </div>
+
+                {planningLoading ? (
+                  <div style={{ textAlign: "center", padding: "60px 0", color: theme.textMuted }}>Loading crew profiles…</div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+
+                    {/* LEFT: Volunteer roster */}
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: theme.textMuted, marginBottom: 10 }}>
+                        Candidate Roster — {filteredPlanners.length} shown
+                      </div>
+
+                      {/* Filter pills */}
+                      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+                        {[
+                          { key: "all",          label: "All" },
+                          { key: "tl_eligible",  label: "TL Eligible" },
+                          { key: "ops_eligible", label: "Ops Eligible" },
+                          { key: "assigned",     label: "Assigned" },
+                        ].map(f => (
+                          <button key={f.key} onClick={() => setPlanningFilter(f.key)} style={{
+                            padding: "5px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700,
+                            cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                            background: planningFilter === f.key ? primaryColor : "transparent",
+                            color: planningFilter === f.key ? "#fff" : theme.textMuted,
+                            border: `1.5px solid ${planningFilter === f.key ? primaryColor : theme.border}`,
+                          }}>{f.label}</button>
+                        ))}
+                      </div>
+
+                      {/* Candidate cards */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 580, overflowY: "auto", paddingRight: 4 }}>
+                        {filteredPlanners.length === 0 && (
+                          <div style={{ textAlign: "center", padding: "32px 0", color: theme.textMuted, fontSize: 13 }}>
+                            No candidates match this filter.
+                          </div>
+                        )}
+                        {filteredPlanners.map(s => {
+                          const assignedZone = getAssignedZone(s.uid);
+                          const assignedZoneLabel = assignedZone ? planningZones.find(z => z.id === assignedZone)?.label || assignedZone : null;
+                          return (
+                            <div key={s.uid} style={{
+                              background: "#fff", borderRadius: 10, padding: "12px 14px",
+                              border: `1.5px solid ${assignedZone ? primaryColor : theme.border}`,
+                              boxShadow: assignedZone ? `0 0 0 3px ${primaryColor}18` : "0 1px 4px rgba(0,0,0,0.05)",
+                            }}>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                                <div style={{ fontWeight: 700, fontSize: 13, color: theme.text }}>{s.name}</div>
+                                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                  {s.opsLeadEligible && (
+                                    <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "rgba(15,52,96,0.1)", color: "#0F3460" }}>Ops Eligible</span>
+                                  )}
+                                  <span style={{ fontSize: 20, fontWeight: 800, color: tc(s.score), lineHeight: 1 }}>{s.score}</span>
+                                </div>
+                              </div>
+
+                              {/* Score breakdown chips */}
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+                                {s.breakdown.map((b, i) => (
+                                  <span key={i} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 999, background: `${primaryColor}12`, color: primaryColor, fontWeight: 600 }}>
+                                    +{b.points} {b.label}
+                                  </span>
+                                ))}
+                              </div>
+
+                              {/* Assigned badge */}
+                              {assignedZoneLabel && (
+                                <div style={{ fontSize: 11, color: primaryColor, fontWeight: 700, marginBottom: 6 }}>
+                                  📍 Assigned to {assignedZoneLabel}
+                                </div>
+                              )}
+
+                              {/* Assign buttons */}
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                {planningZones.map(zone => {
+                                  const asgn = zoneAssignments[zone.id] || {};
+                                  const isTL  = asgn.tl  === s.uid;
+                                  const isOps = asgn.ops === s.uid;
+                                  const isVol = (asgn.volunteers || []).includes(s.uid);
+                                  return (
+                                    <div key={zone.id} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                                      <div style={{ fontSize: 10, color: theme.textMuted, fontWeight: 700, textAlign: "center" }}>{zone.name}</div>
+                                      <div style={{ display: "flex", gap: 3 }}>
+                                        {s.score >= 60 && (
+                                          <button onClick={() => assignToZone(zone.id, s.uid, "tl")} style={{
+                                            padding: "3px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
+                                            border: `1.5px solid ${isTL ? "#27ae60" : theme.border}`,
+                                            background: isTL ? "#27ae60" : "#fff",
+                                            color: isTL ? "#fff" : theme.textMuted,
+                                            fontFamily: "'DM Sans', sans-serif",
+                                          }}>TL</button>
+                                        )}
+                                        {s.opsLeadEligible && (
+                                          <button onClick={() => assignToZone(zone.id, s.uid, "ops")} style={{
+                                            padding: "3px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
+                                            border: `1.5px solid ${isOps ? "#0F3460" : theme.border}`,
+                                            background: isOps ? "#0F3460" : "#fff",
+                                            color: isOps ? "#fff" : theme.textMuted,
+                                            fontFamily: "'DM Sans', sans-serif",
+                                          }}>Ops</button>
+                                        )}
+                                        <button onClick={() => assignToZone(zone.id, s.uid, "volunteer")} style={{
+                                          padding: "3px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
+                                          border: `1.5px solid ${isVol ? primaryColor : theme.border}`,
+                                          background: isVol ? `${primaryColor}15` : "#fff",
+                                          color: isVol ? primaryColor : theme.textMuted,
+                                          fontFamily: "'DM Sans', sans-serif",
+                                        }}>Vol</button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* RIGHT: Zone breakdown */}
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: theme.textMuted, marginBottom: 10 }}>
+                        Zone Assignments
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                        {planningZones.map(zone => {
+                          const asgn = zoneAssignments[zone.id] || {};
+                          const tlProfile  = asgn.tl  ? planningProfiles.find(p => p.uid === asgn.tl)  : null;
+                          const opsProfile = asgn.ops ? planningProfiles.find(p => p.uid === asgn.ops) : null;
+                          const volProfiles = (asgn.volunteers || []).map(uid => planningProfiles.find(p => p.uid === uid)).filter(Boolean);
+                          const filled = (tlProfile ? 1 : 0) + (opsProfile ? 1 : 0) + volProfiles.length;
+                          return (
+                            <div key={zone.id} style={{
+                              background: "#fff", borderRadius: 12, padding: "14px 16px",
+                              border: `1.5px solid ${filled > 0 ? primaryColor + "44" : theme.border}`,
+                            }}>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                                <div style={{ fontWeight: 700, fontSize: 13, color: theme.text }}>{zone.label || zone.name}</div>
+                                <span style={{ fontSize: 11, color: filled > 0 ? primaryColor : theme.textMuted, fontWeight: 600 }}>
+                                  {filled} assigned
+                                </span>
+                              </div>
+
+                              {/* Ops Lead slot */}
+                              <div style={{ marginBottom: 8 }}>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: "#0F3460", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Ops Lead</div>
+                                {opsProfile
+                                  ? <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(15,52,96,0.06)", borderRadius: 7, padding: "6px 10px" }}>
+                                      <span style={{ fontSize: 12, fontWeight: 600, color: "#0F3460" }}>{opsProfile.name}</span>
+                                      <button onClick={() => assignToZone(zone.id, opsProfile.uid, "ops")} style={{ background: "none", border: "none", color: "#c0392b", cursor: "pointer", fontSize: 14 }}>×</button>
+                                    </div>
+                                  : <div style={{ fontSize: 11, color: theme.textMuted, fontStyle: "italic", padding: "6px 0" }}>Not assigned</div>
+                                }
+                              </div>
+
+                              {/* Team Lead slot */}
+                              <div style={{ marginBottom: 8 }}>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: "#27ae60", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Team Lead</div>
+                                {tlProfile
+                                  ? <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(39,174,96,0.08)", borderRadius: 7, padding: "6px 10px" }}>
+                                      <span style={{ fontSize: 12, fontWeight: 600, color: "#27ae60" }}>{tlProfile.name}</span>
+                                      <button onClick={() => assignToZone(zone.id, tlProfile.uid, "tl")} style={{ background: "none", border: "none", color: "#c0392b", cursor: "pointer", fontSize: 14 }}>×</button>
+                                    </div>
+                                  : <div style={{ fontSize: 11, color: theme.textMuted, fontStyle: "italic", padding: "6px 0" }}>Not assigned</div>
+                                }
+                              </div>
+
+                              {/* Volunteers */}
+                              <div style={{ marginBottom: 10 }}>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Volunteers ({volProfiles.length})</div>
+                                {volProfiles.length === 0
+                                  ? <div style={{ fontSize: 11, color: theme.textMuted, fontStyle: "italic" }}>None assigned</div>
+                                  : volProfiles.map(vp => (
+                                    <div key={vp.uid} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 8px", borderRadius: 6, background: `${primaryColor}08`, marginBottom: 3 }}>
+                                      <span style={{ fontSize: 12, color: theme.text }}>{vp.name}</span>
+                                      <button onClick={() => assignToZone(zone.id, vp.uid, "volunteer")} style={{ background: "none", border: "none", color: "#c0392b", cursor: "pointer", fontSize: 14 }}>×</button>
+                                    </div>
+                                  ))
+                                }
+                              </div>
+
+                              {/* Shift coverage for this zone */}
+                              {(() => {
+                                const zoneShifts = shifts.filter(s => s.zone === zone.id);
+                                if (!zoneShifts.length) return (
+                                  <div style={{ paddingTop: 10, borderTop: `1px solid ${theme.border}` }}>
+                                    <div style={{ fontSize: 10, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Shifts</div>
+                                    <div style={{ fontSize: 11, color: theme.textMuted, fontStyle: "italic" }}>No shifts assigned to this zone yet.</div>
+                                  </div>
+                                );
+                                return (
+                                  <div style={{ paddingTop: 10, borderTop: `1px solid ${theme.border}` }}>
+                                    <div style={{ fontSize: 10, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Shifts ({zoneShifts.length})</div>
+                                    {zoneShifts.map(shift => {
+                                      const filled  = (shift.assigned || []).length;
+                                      const cap     = shift.capacity || 0;
+                                      const pct     = cap > 0 ? Math.min(100, Math.round((filled / cap) * 100)) : 0;
+                                      const sc      = filled >= cap && cap > 0 ? "#27ae60" : filled > 0 ? "#f39c12" : "#e74c3c";
+                                      const warn    = cap > 0 && filled < cap * 0.5;
+                                      return (
+                                        <div key={shift.id} style={{ marginBottom: 8 }}>
+                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
+                                            <div>
+                                              <span style={{ fontSize: 12, fontWeight: 600, color: theme.text }}>{shift.name}</span>
+                                              <span style={{ fontSize: 11, color: theme.textMuted, marginLeft: 6 }}>{shift.start_time} – {shift.end_time}</span>
+                                            </div>
+                                            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                                              {warn && <span style={{ fontSize: 14 }} title="Understaffed">⚠️</span>}
+                                              <span style={{ fontSize: 11, fontWeight: 700, color: sc }}>{cap > 0 ? `${filled}/${cap}` : `${filled} claimed`}</span>
+                                            </div>
+                                          </div>
+                                          {cap > 0 && (
+                                            <div style={{ height: 4, background: theme.border, borderRadius: 999, overflow: "hidden" }}>
+                                              <div style={{ height: "100%", width: `${pct}%`, background: sc, borderRadius: 999 }} />
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* ── REPORTS TAB ── */}
           {activeTab === "reports" && (

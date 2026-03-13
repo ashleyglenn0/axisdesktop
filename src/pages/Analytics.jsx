@@ -266,6 +266,64 @@ export default function Analytics() {
           )}
         </div>
       </div>
+
+      {/* ── Axis Insights Premium ─────────────────────────────────────────── */}
+      <SectionLabel>Axis Insights — Premium</SectionLabel>
+      <div style={{
+        borderRadius: 14,
+        background: "linear-gradient(135deg, #0F2A1E 0%, #1C4A36 60%, #2d6e52 100%)",
+        padding: "28px 32px",
+        position: "relative",
+        overflow: "hidden",
+        marginBottom: 40,
+      }}>
+        <div style={{ position: "absolute", top: -40, right: -40, width: 220, height: 220, borderRadius: "50%", background: "rgba(235,199,100,0.07)", pointerEvents: "none" }} />
+        <div style={{ position: "absolute", bottom: -60, right: 80, width: 160, height: 160, borderRadius: "50%", background: "rgba(235,199,100,0.04)", pointerEvents: "none" }} />
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 28, position: "relative" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <span style={{ fontSize: 22 }}>\u2726</span>
+              <span style={{ fontSize: 18, fontWeight: 800, color: "#EBC764", letterSpacing: "-0.01em", fontFamily: "'Playfair Display', serif" }}>Axis Insights</span>
+              <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(235,199,100,0.2)", color: "#EBC764", letterSpacing: "0.08em" }}>PREMIUM</span>
+            </div>
+            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.85)", lineHeight: 1.65, marginBottom: 18, maxWidth: 500 }}>
+              AI-generated post-event intelligence built from your real Axis data. Coverage gap analysis by zone, check-in surge detection, volunteer performance scoring, and a branded debrief report delivered to the client.
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 22 }}>
+              {["Coverage gap analysis", "Check-in surge windows", "Volunteer reliability scores", "Predictive staffing recommendations", "Branded PDF client deliverable"].map(f => (
+                <span key={f} style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", borderRadius: 999, background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.85)", border: "1px solid rgba(255,255,255,0.15)" }}>{f}</span>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={() => alert("Axis Insights is coming soon. This feature will be available as a premium add-on.")}
+                style={{ padding: "11px 22px", borderRadius: 8, border: "none", background: "#EBC764", color: "#0F2A1E", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans', sans-serif", boxShadow: "0 2px 12px rgba(235,199,100,0.3)", transition: "all 0.15s" }}
+                onMouseEnter={e => { e.currentTarget.style.background = "#f0d070"; e.currentTarget.style.transform = "translateY(-1px)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "#EBC764"; e.currentTarget.style.transform = "translateY(0)"; }}
+              >Generate Insights Report</button>
+              <button
+                onClick={() => alert("Contact M&M Operations to add Axis Insights to your engagement.")}
+                style={{ padding: "11px 22px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.25)", background: "transparent", color: "rgba(255,255,255,0.85)", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans', sans-serif", transition: "all 0.15s" }}
+                onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+              >Learn More</button>
+            </div>
+          </div>
+          <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", gap: 10, minWidth: 170 }}>
+            {[
+              { label: "Coverage Gaps",     value: "\u2014", sub: "zones analyzed" },
+              { label: "Peak Check-In",     value: "\u2014", sub: "surge window" },
+              { label: "Reliability Score", value: "\u2014", sub: "crew average" },
+            ].map(stat => (
+              <div key={stat.label} style={{ background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: "10px 14px" }}>
+                <div style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 3 }}>{stat.label}</div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: "#EBC764", lineHeight: 1 }}>{stat.value}</div>
+                <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>{stat.sub}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

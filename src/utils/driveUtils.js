@@ -9,7 +9,7 @@
  *   4. Returns folder URL to write back to Firestore
  */
 
-const TEMPLATES_FOLDER_ID = "1181vXektOGzQQZjUt0-ysQwvbrJls1kh";
+const TEMPLATES_FOLDER_ID = "1bu_eIw3YljNogPF_zUieoaa6TLBKAOpd";
 
 // Subfolder names inside _Templates that match each pillar
 const PILLAR_FOLDER_MAP = {

@@ -422,11 +422,13 @@ export default function Pipeline() {
 
   const sendPortalInvite = async () => {
     if (!selected.contact_email && !selected.email) return;
+    const email = selected.contact_email || selected.email;
     setSendingInvite(true);
     await updateDoc(doc(db, "pipeline", selected.id), {
-      portal_invite_sent: true,
-      portal_invite_date: new Date().toISOString(),
-      portal_client_id: selected.id,
+      portal_invite_sent:   true,
+      portal_invite_date:   new Date().toISOString(),
+      portal_client_id:     selected.id,
+      portal_client_email:  email,  // used by client portal auth hook to scope the record
     });
     setInviteSent(true);
     setSelected(prev => ({ ...prev, portal_invite_sent: true }));
