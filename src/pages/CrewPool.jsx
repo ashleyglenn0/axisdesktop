@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { collection, getDocs, doc, updateDoc, setDoc, deleteDoc, serverTimestamp, writeBatch } from "firebase/firestore";
+import { collection, getDocs, doc, updateDoc, setDoc, deleteDoc, serverTimestamp, writeBatch, addDoc, query, where } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../hooks/useAuth";
 import { theme } from "../theme";
@@ -321,16 +321,45 @@ export default function CrewPool() {
     });
 
     // NEW: Also write to volunteers collection (Axis mobile reads from here)
-    await setDoc(doc(db, "volunteers", selected.id), {
-      benchStatus:    benchStatus,
-      benchEvent:     benchEvent,
-      engagementType: assignEngagementType,
-      name:           selected.display_name,
-      email:          selected.display_email,
-      talentPoolId:   selected.id,
-      lastUpdatedBy:  activeUser,
-      lastUpdatedAt:  serverTimestamp(),
-    }, { merge: true });
+    // Find existing volunteers doc by name and update event — or create placeholder if not yet onboarded
+const volQuery = await getDocs(
+  query(
+    collection(db, "volunteers"),
+    where("first_name", "==", selected.display_name.split(" ")[0] || ""),
+    where("last_name",  "==", selected.display_name.split(" ").slice(1).join(" ") || "")
+  )
+);
+
+if (!volQuery.empty) {
+  // Person already onboarded — update event on their existing doc
+  await updateDoc(volQuery.docs[0].ref, {
+    event:         event.name || assignEventId,
+    event_id:      assignEventId,
+    benchStatus,
+    benchEvent,
+    engagementType: assignEngagementType,
+    lastUpdatedBy:  activeUser,
+    lastUpdatedAt:  serverTimestamp(),
+  });
+} else {
+  // Not yet onboarded — create placeholder so CrewDashboard can read event
+  await setDoc(doc(db, "volunteers", selected.id), {
+    first_name:     selected.display_name.split(" ")[0] || "",
+    last_name:      selected.display_name.split(" ").slice(1).join(" ") || "",
+    name:           selected.display_name,
+    email:          selected.display_email,
+    uid:            "",
+    event:          event.name || assignEventId,
+    event_id:       assignEventId,
+    benchStatus,
+    benchEvent,
+    engagementType: assignEngagementType,
+    talentPoolId:   selected.id,
+    is_pool_member: true,
+    lastUpdatedBy:  activeUser,
+    lastUpdatedAt:  serverTimestamp(),
+  });
+}
 
     setShowAssign(false);
     setAssignEventId(""); setAssignRole("volunteer"); setAssignHours(""); setAssignNote("");

@@ -16,6 +16,7 @@ const NAV = [
   { to: "/chat",             label: "Chat",             icon: "◎" },
   { to: "/analytics",       label: "Analytics",        icon: "◈" },
   { to: "/inbox",           label: "Inbox",            icon: "✉" },
+  { to: "/schedule", label: "Schedule", icon: "◫" },
 ];
 
 export default function Sidebar() {

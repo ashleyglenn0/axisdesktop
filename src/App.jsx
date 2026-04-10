@@ -16,6 +16,7 @@ import CrewPool from "./pages/CrewPool";
 import ActivationSetup from "./pages/ActivationSetup";
 import ActivationConfig from "./pages/ActivationConfig";
 import EventCommand from "./pages/EventCommand";
+import ScheduleManager from "./pages/ScheduleManager";
 import { theme } from "./theme";
 
 function AppShell({ children }) {
@@ -42,6 +43,7 @@ export default function App() {
           <Route path="/activation-setup" element={<ProtectedRoute><AppShell><ActivationSetup /></AppShell></ProtectedRoute>} />
           <Route path="/activation-config/:intakeId" element={<ProtectedRoute><AppShell><ActivationConfig /></AppShell></ProtectedRoute>} />
           <Route path="/events" element={<ProtectedRoute><AppShell><Events /></AppShell></ProtectedRoute>} />
+          <Route path="/schedule" element={<ProtectedRoute><AppShell><ScheduleManager /></AppShell></ProtectedRoute>} />
           <Route path="/event/:eventId" element={<ProtectedRoute><AppShell><EventCommand /></AppShell></ProtectedRoute>} />
           <Route path="/library" element={<ProtectedRoute><AppShell><Library /></AppShell></ProtectedRoute>} />
           <Route path="/finance" element={<ProtectedRoute><AppShell><Finance /></AppShell></ProtectedRoute>} />
