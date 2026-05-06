@@ -11,12 +11,14 @@ import Analytics from "./pages/Analytics";
 import Inbox     from "./pages/Inbox";
 import Leads from "./pages/Leads";
 import Pipeline from "./pages/Pipeline";
+import Pricing from "./pages/Pricing";
 import Events from "./pages/Events";
 import CrewPool from "./pages/CrewPool";
 import ActivationSetup from "./pages/ActivationSetup";
 import ActivationConfig from "./pages/ActivationConfig";
 import EventCommand from "./pages/EventCommand";
 import ScheduleManager from "./pages/ScheduleManager";
+import DocumentGenerator from "./pages/DocumentGenerator";
 import { theme } from "./theme";
 
 function AppShell({ children }) {
@@ -39,6 +41,7 @@ export default function App() {
           <Route path="/dashboard" element={<ProtectedRoute><AppShell><Dashboard /></AppShell></ProtectedRoute>} />
           <Route path="/leads" element={<ProtectedRoute><AppShell><Leads /></AppShell></ProtectedRoute>} />
           <Route path="/pipeline" element={<ProtectedRoute><AppShell><Pipeline /></AppShell></ProtectedRoute>} />
+          <Route path="/pricing" element={<ProtectedRoute><AppShell><Pricing /></AppShell></ProtectedRoute>} />
           <Route path="/crew-pool" element={<ProtectedRoute><AppShell><CrewPool /></AppShell></ProtectedRoute>} />
           <Route path="/activation-setup" element={<ProtectedRoute><AppShell><ActivationSetup /></AppShell></ProtectedRoute>} />
           <Route path="/activation-config/:intakeId" element={<ProtectedRoute><AppShell><ActivationConfig /></AppShell></ProtectedRoute>} />
@@ -49,6 +52,7 @@ export default function App() {
           <Route path="/finance" element={<ProtectedRoute><AppShell><Finance /></AppShell></ProtectedRoute>} />
           <Route path="/chat" element={<ProtectedRoute><AppShell><Chat /></AppShell></ProtectedRoute>} />
           <Route path="/analytics" element={<ProtectedRoute><AppShell><Analytics /></AppShell></ProtectedRoute>} />
+          <Route path="/documents" element={<ProtectedRoute><AppShell><DocumentGenerator /></AppShell></ProtectedRoute>} />
           <Route path="/inbox" element={<ProtectedRoute><AppShell><Inbox /></AppShell></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>

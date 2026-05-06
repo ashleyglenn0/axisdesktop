@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@docuseal/react": "^1.0.73",
+    "docx": "^9.6.1",
     "firebase": "^12.10.0",
     "jspdf": "^4.2.0",
     "jspdf-autotable": "^5.0.7",

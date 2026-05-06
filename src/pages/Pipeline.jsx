@@ -3,11 +3,12 @@ import {
   collection, getDocs, doc, updateDoc, addDoc, deleteDoc,
   serverTimestamp, query, orderBy,
 } from "firebase/firestore";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { db } from "../firebase";
 import { useAuth } from "../hooks/useAuth";
 import { theme } from "../theme";
 import { Card, Button, Badge, Spinner, EmptyState, Input, Textarea, LifecyclePill } from "../components/UI";
+import PipelinePricingPanel from "../components/pricing/PricingPanel";
 
 // ─── STAGE CONFIG ──────────────────────────────────────────────────────────────
 const STAGES = [
@@ -332,6 +333,10 @@ export default function Pipeline() {
   const { activeUser } = useAuth();
   const navigate = useNavigate();
 
+  const [searchParams] = useSearchParams();
+  const justPriced = searchParams.get("priced") === "1";
+  const highlightId = searchParams.get("highlight");
+
   const [items,       setItems]       = useState([]);
   const [selected,    setSelected]    = useState(null);
   const [formData,    setFormData]    = useState({});
@@ -357,6 +362,13 @@ export default function Pipeline() {
   const [sendingInvite, setSendingInvite] = useState(false);
 
   useEffect(() => { load(); }, []);
+  
+  useEffect(() => {
+     if (highlightId && items.length > 0) {
+       const match = items.find(i => i.id === highlightId);
+      if (match) handleSelect(match);
+     }
+   }, [highlightId, items]);
 
   const load = async () => {
     setLoading(true);
@@ -657,7 +669,7 @@ export default function Pipeline() {
             </Button>
             <Button
               onClick={() => advanceStage("pricing_approved")}
-              disabled={saving || !matrixViewed || !formData.pricing_tier || !formData.pricing_confirmed_price}
+              disabled={saving || !formData.pricing_tier || !formData.pricing_confirmed_price}
             >
               Confirm Pricing → Approve
             </Button>
@@ -773,11 +785,22 @@ export default function Pipeline() {
     }
 
     if (stage === "discovery_complete") {
-      return <>
-        {sectionTitle("Pricing", "Review the pricing matrix, then enter the confirmed tier and price below.")}
-        <PricingForm data={formData} onChange={updateField} matrixViewed={matrixViewed} onMatrixOpen={() => setMatrixViewed(true)} />
-      </>;
-    }
+     return <>
+       {sectionTitle("Pricing", "Run the Pricing Engine, then confirm the output below.")}
+       {justPriced && (
+         <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 16,
+           background: "rgba(100,200,100,0.08)", border: "1px solid rgba(100,200,100,0.3)",
+           fontSize: 12, fontWeight: 600, color: "#2d7a46" }}>
+           ✓ Engine run complete — review and confirm the numbers below.
+         </div>
+       )}
+       <PipelinePricingPanel
+         pipelineId={selected?.id}
+         data={formData}
+         onChange={updateField}
+       />
+     </>;
+   }
 
     if (stage === "pricing_approved") {
       return <>

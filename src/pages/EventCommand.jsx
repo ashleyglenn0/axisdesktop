@@ -23,6 +23,7 @@ import {
   previewEventTheme,
 } from "../utils/generateEventTheme";
 import { Card, Button, Badge, Spinner, EmptyState } from "../components/UI";
+import IntelligenceTab from "../components/events/IntelligenceTab";
 
 const CHECKLISTS = {
   P1: [
@@ -2184,6 +2185,9 @@ export default function EventCommand() {
               🗑️ Delete
             </button>
           )}
+          <button onClick={() => navigate(`/documents?event_id=${eventId}`)}>
+              Generate Docs
+          </button>
         </div>
       </div>
 
@@ -2360,6 +2364,7 @@ export default function EventCommand() {
               { key: "app_setup", label: "⚙️ App Setup" },
               { key: "planning", label: "🗂 Staff Planning" },
               { key: "reports", label: "Reports" },
+              { key: "intelligence", label: "📊 Intelligence" }
             ].map((t) => (
               <button
                 key={t.key}
@@ -5458,6 +5463,10 @@ export default function EventCommand() {
               );
             })()}
 
+          {/* ── INTELLIGENCE TAB ── */}
+          {activeTab === "intelligence" && (
+            <IntelligenceTab event={event} eventId={eventId} />
+          )}
           {/* ── REPORTS TAB ── */}
           {activeTab === "reports" && (
             <div>
