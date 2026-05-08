@@ -6,7 +6,7 @@ import { useNavigate } from "react-router-dom";
 import { theme } from "../theme";
 import { Button, Input } from "../components/UI";
 
-const TEAM = ["Ashley", "Mikal", "Shanell"];
+const TEAM = ["Ashley Glenn", "Mikal Driver", "Shanell Jefferson"];
 
 export default function Login() {
   const { selectUser } = useAuth();

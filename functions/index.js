@@ -29,7 +29,6 @@ const MM_SIGNERS = {
 const SHANELL_SIGNABLE = ['ic_agreement'];
 const FOUNDER_ONLY     = ['msa', 'sow', 'proposal', 'waiver', 'third_party_staffing_waiver'];
 
-// Template file name patterns in Drive
 const TEMPLATE_NAMES = {
   sow:          'MM_SOW_Template',
   proposal:     'MM_Proposal_Template',
@@ -59,13 +58,10 @@ async function getTemplateBuffer(docType) {
   });
 
   const files = listRes.data.files;
-  if (!files || files.length === 0) {
-    throw new Error(`Template not found in Drive: ${templateName}`);
-  }
+  if (!files || files.length === 0) throw new Error(`Template not found in Drive: ${templateName}`);
 
   const file = files[0];
 
-  // Google Docs export as docx
   if (file.mimeType === 'application/vnd.google-apps.document') {
     const exportRes = await drive.files.export(
       { fileId: file.id, mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
@@ -74,7 +70,6 @@ async function getTemplateBuffer(docType) {
     return Buffer.from(exportRes.data);
   }
 
-  // Already a .docx — download directly
   const downloadRes = await drive.files.get(
     { fileId: file.id, alt: 'media' },
     { responseType: 'arraybuffer' }
@@ -83,7 +78,6 @@ async function getTemplateBuffer(docType) {
 }
 
 // ─── Fill template placeholders ───────────────────────────────────────────────
-// Opens the .docx ZIP, replaces bracket placeholders in word/document.xml
 async function fillTemplate(docxBuffer, placeholders) {
   const zip     = await JSZip.loadAsync(docxBuffer);
   const xmlFile = zip.file('word/document.xml');
@@ -165,7 +159,15 @@ function getMMSigner(operatorName) {
   return MM_SIGNERS.ASHLEY;
 }
 
-// ─── convertDocxToPdf ────────────────────────────────────────────────────────
+// ─── Review routing — who reviews whose docs ─────────────────────────────────
+function getReviewers(generatedBy) {
+  const name = (generatedBy || '').toLowerCase();
+  if (name.includes('ashley')) return ['Mikal Driver'];
+  if (name.includes('mikal'))  return ['Ashley Glenn'];
+  return ['Ashley Glenn', 'Mikal Driver']; // Shanell or anyone else
+}
+
+// ─── convertDocxToPdf ─────────────────────────────────────────────────────────
 async function convertDocxToPdf(docxUrl, docxStoragePath, contextId, originalFilename) {
   if (!CLOUDCONVERT_API_KEY) throw new Error('CLOUDCONVERT_API_KEY not configured');
 
@@ -226,8 +228,6 @@ async function convertDocxToPdf(docxUrl, docxStoragePath, contextId, originalFil
 
 // ─────────────────────────────────────────────────────────────────────────────
 // generateMMDocument
-// Pulls template from Drive, fills placeholders, uploads to Storage,
-// saves Firestore record, returns documentId + url for Sign & Send
 // ─────────────────────────────────────────────────────────────────────────────
 exports.generateMMDocument = onCall(
   { timeoutSeconds: 120 },
@@ -270,7 +270,6 @@ exports.generateMMDocument = onCall(
         generatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      // Save email back to talent_pool on IC Agreement generation
       if (docType === 'ic_agreement' && counterpartyUid && counterpartyEmail) {
         const poolSnap = await db.collection('talent_pool').where('uid', '==', counterpartyUid).limit(1).get();
         if (!poolSnap.empty) await poolSnap.docs[0].ref.update({ email: counterpartyEmail });
@@ -365,6 +364,7 @@ exports.createMMDocuSealSubmission = onCall(
 
       await db.collection('mm_documents').doc(documentId).update({
         signingStatus: 'pending', requiresSignature: true,
+        status: 'sent',  // ← sync review status
         docusealSubmissionId: submissionId,
         mmSignerName: mmSigner.name, mmSignerEmail: mmSigner.email,
         mmEmbedSrc: mmSub?.embed_src || null,
@@ -424,18 +424,17 @@ exports.mmDocuSealWebhook = onRequest(async (req, res) => {
     }
 
     if (event.event_type === 'submission.completed') {
-      const submission   = event.data;
-      const metadata     = submission.metadata || {};
-      const docType      = metadata.doc_type;
-      const documentId   = metadata.document_id;
+      const submission    = event.data;
+      const metadata      = submission.metadata || {};
+      const docType       = metadata.doc_type;
+      const documentId    = metadata.document_id;
       const contractorUid = metadata.counterparty_uid;
-      const eventId      = metadata.event_id;
-      const engagementId = metadata.engagement_id;
-      const contextName  = metadata.context_name;
-      const pdfFilename  = metadata.pdf_filename;
-      const signedDocUrl = submission.documents?.[0]?.url || null;
+      const eventId       = metadata.event_id;
+      const engagementId  = metadata.engagement_id;
+      const contextName   = metadata.context_name;
+      const pdfFilename   = metadata.pdf_filename;
+      const signedDocUrl  = submission.documents?.[0]?.url || null;
 
-      // IC Agreement: unlock shifts
       if (docType === 'ic_agreement' && contractorUid) {
         const snap = await db.collection('volunteerProfiles').where('uid', '==', contractorUid).limit(1).get();
         if (!snap.empty) {
@@ -448,25 +447,23 @@ exports.mmDocuSealWebhook = onRequest(async (req, res) => {
         }
       }
 
-      // Waiver: flag on event
       if ((docType === 'waiver' || docType === 'third_party_staffing_waiver') && eventId) {
         await db.collection('events').doc(eventId).update({
-          waiver_signed: true,
+          waiver_signed:    true,
           waiver_signed_at: admin.firestore.FieldValue.serverTimestamp(),
-          waiver_doc_url: signedDocUrl,
+          waiver_doc_url:   signedDocUrl,
         });
       }
 
-      // Update mm_documents
       if (documentId) {
         await db.collection('mm_documents').doc(documentId).update({
           signingStatus: 'completed', bothSigned: true,
+          status: 'signed',  // ← sync review status
           completedAt: admin.firestore.FieldValue.serverTimestamp(),
           signedDocumentUrl: signedDocUrl,
         });
       }
 
-      // Pipeline: flag signed docs
       if (engagementId && ['msa', 'sow', 'proposal'].includes(docType)) {
         await db.collection('pipeline').doc(engagementId).update({
           [`docs_signed.${docType}`]:    true,
@@ -474,7 +471,6 @@ exports.mmDocuSealWebhook = onRequest(async (req, res) => {
         });
       }
 
-      // Upload signed PDF to Drive client folder
       if (signedDocUrl && contextName && pdfFilename) {
         try {
           const { driveViewLink } = await uploadSignedDocToDrive(
@@ -502,33 +498,218 @@ exports.mmDocuSealWebhook = onRequest(async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // saveMMDocRecord
+// Saves a generated doc record with full status/review layer
+// Storage path is now structured: clients/{client}/events/{eventId}/documents/
 // ─────────────────────────────────────────────────────────────────────────────
 exports.saveMMDocRecord = onCall(async (request) => {
-  const { filename, url, docType, storagePath, contextId, contextName,
-          operatorName, eventId, engagementId, counterpartyName,
-          counterpartyEmail, counterpartyUid } = request.data;
+  const {
+    filename, url, docType, storagePath, contextId, contextName,
+    operatorName, eventId, engagementId, counterpartyName,
+    counterpartyEmail, counterpartyUid,
+  } = request.data;
 
   if (!filename || !url || !docType) {
     throw new HttpsError('invalid-argument', 'filename, url, and docType are required');
   }
 
   try {
+    const reviewers = getReviewers(operatorName);
+
     const ref = await db.collection('mm_documents').add({
       name: filename, fileName: filename, docType, url, downloadUrl: url,
       storagePath: storagePath || null,
       fileType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      contextId: contextId || null, contextName: contextName || null,
-      eventId: eventId || null, engagementId: engagementId || null,
-      operatorName: operatorName || null,
-      counterpartyName: counterpartyName || null,
+      contextId:    contextId    || null,
+      contextName:  contextName  || null,
+      eventId:      eventId      || null,
+      engagementId: engagementId || null,
+      operatorName:      operatorName      || null,
+      generatedBy:       operatorName      || null,
+      counterpartyName:  counterpartyName  || null,
       counterpartyEmail: counterpartyEmail || null,
-      counterpartyUid: counterpartyUid || null,
-      signingStatus: 'not_started', requiresSignature: true,
-      mmSigned: false, counterpartySigned: false,
+      counterpartyUid:   counterpartyUid   || null,
+
+      // ── Review / approval state ───────────────────────────────────────────
+      status:      'draft',
+      reviewers,
+      reviewedBy:  null,
+      approvedBy:  null,
+      approvedAt:  null,
+      sharedBy:    null,
+      sharedAt:    null,
+
+      // ── Signing state ─────────────────────────────────────────────────────
+      signingStatus:     'not_started',
+      requiresSignature: true,
+      mmSigned:          false,
+      counterpartySigned: false,
+      bothSigned:        false,
+      signedDocumentUrl: null,
+
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+
     return { success: true, documentId: ref.id };
   } catch (err) {
+    throw new HttpsError('internal', err.message);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// approveMMDoc
+// Founders only — flips status to 'approved', unlocking Sign & Send
+// ─────────────────────────────────────────────────────────────────────────────
+exports.approveMMDoc = onCall(async (request) => {
+  const { documentId, approvedBy } = request.data;
+
+  if (!documentId || !approvedBy) {
+    throw new HttpsError('invalid-argument', 'documentId and approvedBy are required');
+  }
+
+  const name      = (approvedBy || '').toLowerCase();
+  const isFounder = name.includes('ashley') || name.includes('mikal');
+  if (!isFounder) {
+    throw new HttpsError('permission-denied', 'Only founders can approve documents.');
+  }
+
+  try {
+    await db.collection('mm_documents').doc(documentId).update({
+      status:     'approved',
+      approvedBy,
+      approvedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt:  admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await db.collection('activity_log').add({
+      description: `Document approved by ${approvedBy}`,
+      documentId, type: 'document',
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return { success: true };
+  } catch (err) {
+    throw new HttpsError('internal', err.message);
+  }
+});
+
+// ─── EmailJS config ───────────────────────────────────────────────────────────
+const EMAILJS_SERVICE_ID  = 'service_jxgb2v9';
+const EMAILJS_TEMPLATE_ID = 'template_30u4xwv';
+const EMAILJS_PUBLIC_KEY  = process.env.EMAILJS_PUBLIC_KEY  || '';
+const EMAILJS_PRIVATE_KEY = process.env.EMAILJS_PRIVATE_KEY || '';
+
+const REVIEWER_EMAILS = {
+  'Ashley Glenn':      { email: process.env.ASHLEY_EMAIL  || 'ashleyg@motionmethodgroup.com',  name: 'Ashley' },
+  'Mikal Driver':      { email: process.env.MIKAL_EMAIL   || 'mikal@motionmethodgroup.com',    name: 'Mikal'  },
+};
+
+const DOC_TYPE_LABELS = {
+  proposal:     'Proposal',
+  sow:          'Statement of Work',
+  msa:          'Master Service Agreement',
+  ic_agreement: 'IC Agreement',
+  waiver:       'Third-Party Staffing Waiver',
+  invoice:      'Invoice',
+};
+
+async function sendReviewEmail({ reviewerName, reviewerEmail, sharedBy, docType, eventName, docUrl, documentId }) {
+  const reviewLink = `https://axis.motionmethodgroup.com/documents?review=${documentId}`;
+  const docLabel   = DOC_TYPE_LABELS[docType] || docType;
+
+  const payload = {
+    service_id:  EMAILJS_SERVICE_ID,
+    template_id: EMAILJS_TEMPLATE_ID,
+    user_id:     EMAILJS_PUBLIC_KEY,
+    accessToken: EMAILJS_PRIVATE_KEY,
+    template_params: {
+      reviewer_name:  reviewerName,
+      reviewer_email: reviewerEmail,
+      shared_by:      sharedBy,
+      doc_type:       docLabel,
+      event_name:     eventName || 'this engagement',
+      doc_url:        docUrl,
+      review_link:    reviewLink,
+    },
+  };
+
+  const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`EmailJS failed (${res.status}): ${text}`);
+  }
+
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// shareMMDocForReview
+// Moves doc to pending_review — emails each reviewer with doc link + Axis link
+// Internal only: no DocuSeal, no client visibility
+// ─────────────────────────────────────────────────────────────────────────────
+exports.shareMMDocForReview = onCall(async (request) => {
+  const { documentId, sharedBy } = request.data;
+
+  if (!documentId) {
+    throw new HttpsError('invalid-argument', 'documentId is required');
+  }
+
+  try {
+    const docSnap = await db.collection('mm_documents').doc(documentId).get();
+    if (!docSnap.exists) throw new HttpsError('not-found', 'Document not found');
+
+    const docData   = docSnap.data();
+    const reviewers = docData.reviewers || [];
+
+    await db.collection('mm_documents').doc(documentId).update({
+      status:    'pending_review',
+      sharedBy:  sharedBy || null,
+      sharedAt:  admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Send email to each reviewer
+    const emailResults = [];
+    for (const reviewerName of reviewers) {
+      const reviewer = REVIEWER_EMAILS[reviewerName];
+      if (!reviewer) {
+        console.warn(`No email config for reviewer: ${reviewerName}`);
+        continue;
+      }
+      try {
+        await sendReviewEmail({
+          reviewerName:  reviewer.name,
+          reviewerEmail: reviewer.email,
+          sharedBy:      sharedBy || 'M&M Operations',
+          docType:       docData.docType,
+          eventName:     docData.contextName,
+          docUrl:        docData.url,
+          documentId,
+        });
+        emailResults.push({ reviewer: reviewerName, sent: true });
+        console.log(`Review email sent to ${reviewerName} (${reviewer.email})`);
+      } catch (emailErr) {
+        // Non-fatal — status already updated, just log the failure
+        console.error(`Failed to email ${reviewerName}:`, emailErr.message);
+        emailResults.push({ reviewer: reviewerName, sent: false, error: emailErr.message });
+      }
+    }
+
+    await db.collection('activity_log').add({
+      description: `Document shared for review by ${sharedBy} — reviewers: ${reviewers.join(', ')}`,
+      documentId, type: 'document',
+      emailResults,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return { success: true, reviewers, emailResults };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
     throw new HttpsError('internal', err.message);
   }
 });

@@ -16,13 +16,13 @@ import { theme } from "../../theme";
 
 // ─── Industry Benchmarks (research-backed) ───────────────────────────────────
 const BENCHMARKS = {
-  staffing_ratio: 75,           // 1 staff per 75 attendees (tech conference standard)
-  healthy_dropoff_max: 0.20,    // 20% max acceptable drop-off
+  staffing_ratio: 75,
+  healthy_dropoff_max: 0.20,
   healthy_dropoff_label: "10–20%",
-  recruitment_window_ideal: 180, // days — 6 months out
-  recruitment_window_warn: 90,   // days — under 90 is compressed
-  orientation_window_ideal: 60,  // days before event
-  buffer_recruitment: 0.20,      // recruit 15–20% more than needed
+  recruitment_window_ideal: 180,
+  recruitment_window_warn: 90,
+  orientation_window_ideal: 60,
+  buffer_recruitment: 0.20,
   sources: [
     "Event Staffing Agency Calculator (Premier Staff, 2025)",
     "Volunteer Recruitment Strategy Best Practices (Eventeny, 2025)",
@@ -41,9 +41,11 @@ const daysBetween = (a, b) => {
 
 const EMPTY_YEAR = {
   year: "",
+  pre_axis: false,
   engagement_date: "",
   orientation_date: "",
   event_date: "",
+  attendee_count: "",
   applications: "",
   confirmed: "",
   day_of_show: "",
@@ -56,8 +58,8 @@ const EMPTY_YEAR = {
 function analyzeYear(row, attendees) {
   const apps = parseInt(row.applications) || 0;
   const shown = parseInt(row.day_of_show) || 0;
-  const dropoff = apps > 0 ? (apps - shown) / apps : null;
-  const attn = parseInt(attendees) || 0;
+  const dropoff = !row.pre_axis && apps > 0 ? (apps - shown) / apps : null;
+  const attn = parseInt(row.attendee_count) || parseInt(attendees) || 0;
   const staffingNeed = attn > 0 ? Math.ceil(attn / BENCHMARKS.staffing_ratio) : null;
   const staffingGap = staffingNeed !== null ? staffingNeed - shown : null;
   const engToEvent = daysBetween(row.engagement_date, row.event_date);
@@ -85,6 +87,7 @@ function analyzeYear(row, attendees) {
 const GAP_RED    = "#C0392B";
 const GAP_YELLOW = "#8a6800";
 const GAP_GREEN  = "#2d7a46";
+const GAP_AMBER  = "#D97706";
 const GAP_SOFT   = (c) => c + "14";
 
 function GapBadge({ ok, warn, label }) {
@@ -128,20 +131,16 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
   // ── Cover header ──
   pdf.setFillColor(...GREEN);
   pdf.rect(0, 0, W, 110, "F");
-
   pdf.setFillColor(...GOLD);
   pdf.rect(0, 110, W, 4, "F");
-
   pdf.setTextColor(...GOLD);
   pdf.setFontSize(9);
   pdf.setFont("helvetica", "bold");
   pdf.text("MOTION & METHOD  |  ENGAGEMENT INTELLIGENCE REPORT", 40, 30);
-
   pdf.setTextColor(255, 255, 255);
   pdf.setFontSize(22);
   pdf.setFont("helvetica", "bold");
   pdf.text(event.name || "Event Intelligence Report", 40, 62);
-
   pdf.setFontSize(11);
   pdf.setFont("helvetica", "normal");
   pdf.setTextColor(220, 220, 200);
@@ -149,14 +148,12 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
     `${event.client || ""}  |  Generated ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`,
     40, 82
   );
-
   pdf.setFontSize(9);
   pdf.setTextColor(180, 180, 160);
   pdf.text("CONFIDENTIAL - PREPARED BY M&M OPERATIONS FOR CLIENT REVIEW", 40, 100);
 
   let y = 130;
 
-  // ── Helper: section heading ──
   const sectionHead = (title, desc) => {
     if (y > H - 100) { pdf.addPage(); y = 50; }
     pdf.setFillColor(...GREEN);
@@ -176,7 +173,7 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
     }
   };
 
-  const kv = (label, val, color) => {
+  const kv = (label, val) => {
     if (y > H - 60) { pdf.addPage(); y = 50; }
     pdf.setFont("helvetica", "bold");
     pdf.setFontSize(9);
@@ -184,7 +181,7 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
     pdf.text(label.toUpperCase(), 40, y);
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(10);
-    pdf.setTextColor(...(color || [30, 30, 30]));
+    pdf.setTextColor(30, 30, 30);
     pdf.text(String(val ?? "—"), 200, y);
     y += 16;
   };
@@ -196,19 +193,33 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
   kv("Location", event.location || "—");
   kv("Projected Attendance", fmt(parseInt(attendees)));
   kv("Years of Data", `${historicalData.length} year(s)`);
+  kv("Pre-Axis Years", `${historicalData.filter(r => r.pre_axis).length} year(s) — application data not available`);
   kv("M&M Role", "Operations Management - Volunteer Recruitment, Staffing & Floor Execution");
   y += 10;
 
   // ── Section 2: Application & Recruitment Analysis ──
   sectionHead(
     "02  APPLICATION & RECRUITMENT ANALYSIS",
-    "Year-over-year breakdown of application volume, confirmed crew, and day-of show rate. Industry benchmark: healthy drop-off is 10-20%. Above 20% indicates a systemic engagement gap."
+    "Year-over-year breakdown of application volume, confirmed crew, and day-of show rate. Pre-Axis years show check-in/out data only — application data was not captured prior to M&M's Axis deployment. Industry benchmark: healthy drop-off is 10-20%."
   );
 
   const tableRows = historicalData.map((row) => {
-    const apps = parseInt(row.applications) || 0;
-    const conf = parseInt(row.confirmed) || 0;
-    const shown = parseInt(row.day_of_show) || 0;
+    const isPreAxis = !!row.pre_axis;
+    const apps  = parseInt(row.applications) || 0;
+    const conf  = parseInt(row.confirmed)    || 0;
+    const shown = parseInt(row.day_of_show)  || 0;
+
+    if (isPreAxis) {
+      return [
+        row.year || "—",
+        "N/A — Pre-Axis",
+        fmt(conf) || "—",
+        fmt(shown) || "—",
+        "N/A",
+        "PRE-AXIS",
+      ];
+    }
+
     const drop = apps > 0 ? `${Math.round(((apps - shown) / apps) * 100)}%` : "—";
     const flag = apps > 0 && (apps - shown) / apps > BENCHMARKS.healthy_dropoff_max ? "EXCESSIVE" : "OK";
     return [row.year || "—", fmt(apps), fmt(conf), fmt(shown), drop, flag];
@@ -221,24 +232,41 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
     styles: { fontSize: 9, cellPadding: 5 },
     headStyles: { fillColor: GREEN, textColor: [255, 255, 255], fontStyle: "bold" },
     alternateRowStyles: { fillColor: LIGHT },
-    columnStyles: {
-      4: { fontStyle: "bold" },
-      5: { fontStyle: "bold" },
-    },
+    columnStyles: { 4: { fontStyle: "bold" }, 5: { fontStyle: "bold" } },
     didParseCell: (data) => {
       if (data.section === "body" && data.column.index === 5) {
         if (data.cell.raw?.includes("EXCESSIVE")) {
           data.cell.styles.textColor = [192, 57, 43];
+        } else if (data.cell.raw?.includes("PRE-AXIS")) {
+          data.cell.styles.textColor = [138, 104, 0];
         } else {
           data.cell.styles.textColor = [45, 122, 70];
         }
       }
+      // Dim pre-axis rows slightly
+      if (data.section === "body" && data.row.raw?.[5] === "PRE-AXIS" && data.column.index !== 5) {
+        data.cell.styles.textColor = [120, 120, 120];
+        data.cell.styles.fontStyle = "italic";
+      }
     },
     margin: { left: 40, right: 40 },
   });
-  y = pdf.lastAutoTable.finalY + 20;
+  y = pdf.lastAutoTable.finalY + 12;
 
-  // Benchmark callout — recruitment
+  // Pre-Axis note if any exist
+  if (historicalData.some(r => r.pre_axis)) {
+    pdf.setFillColor(255, 248, 231);
+    pdf.roundedRect(40, y, W - 80, 24, 3, 3, "F");
+    pdf.setTextColor(138, 104, 0);
+    pdf.setFontSize(8);
+    pdf.setFont("helvetica", "bold");
+    pdf.text("PRE-AXIS NOTE", 52, y + 9);
+    pdf.setFont("helvetica", "normal");
+    pdf.text("Application data was not captured prior to M&M's Axis deployment. Check-in/out counts sourced from client spreadsheet records.", 140, y + 9);
+    y += 30;
+  }
+
+  // Benchmark callout
   pdf.setFillColor(...LIGHT);
   pdf.roundedRect(40, y, W - 80, 30, 4, 4, "F");
   pdf.setTextColor(...GREEN);
@@ -256,12 +284,11 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
   );
   y += 44;
 
-  // ── Section 3: Timeline Analysis — new landscape page for breathing room ──
+  // ── Section 3: Timeline Analysis ──
   pdf.addPage("letter", "landscape");
   const LW = pdf.internal.pageSize.width;
   let ly = 50;
 
-  // Section header on landscape page
   pdf.setFillColor(...GREEN);
   pdf.rect(40, ly, LW - 80, 28, "F");
   pdf.setTextColor(255, 255, 255);
@@ -291,7 +318,6 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
     ];
   });
 
-  // Landscape usable width: 792 - 80 margins = 712pt
   autoTable(pdf, {
     head: [["Year", "Engagement Start", "First Orientation", "Event Date", "Status"]],
     body: timelineRows,
@@ -301,11 +327,11 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
     headStyles: { fillColor: GREEN, textColor: [255, 255, 255], fontStyle: "bold", fontSize: 9 },
     alternateRowStyles: { fillColor: LIGHT },
     columnStyles: {
-      0: { cellWidth: 50 },   // Year
-      1: { cellWidth: 175 },  // Engagement Start
-      2: { cellWidth: 175 },  // First Orientation
-      3: { cellWidth: 175 },  // Event Date
-      4: { cellWidth: 137 },  // Status — fills remaining space
+      0: { cellWidth: 50 },
+      1: { cellWidth: 175 },
+      2: { cellWidth: 175 },
+      3: { cellWidth: 175 },
+      4: { cellWidth: 137 },
     },
     didParseCell: (data) => {
       if (data.section === "body" && data.column.index === 4) {
@@ -319,7 +345,6 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
   });
   ly = pdf.lastAutoTable.finalY + 14;
 
-  // Benchmark callout on landscape page
   pdf.setFillColor(...LIGHT);
   pdf.roundedRect(40, ly, LW - 80, 30, 4, 4, "F");
   pdf.setTextColor(...GREEN);
@@ -333,11 +358,10 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
     52, ly + 21
   );
 
-  // Back to portrait for remaining sections
+  // Back to portrait
   pdf.addPage("letter", "portrait");
   y = 50;
 
-  // Benchmark callout
   pdf.setFillColor(...LIGHT);
   pdf.roundedRect(40, y, W - 80, 36, 4, 4, "F");
   pdf.setTextColor(...GREEN);
@@ -365,12 +389,7 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
       score >= 4 ? "Strong" :
       score === 3 ? "Adequate" :
       score >= 1 ? "Weak" : "Not Scored";
-    return [
-      row.year || "—",
-      score > 0 ? `${score} / 5` : "—",
-      label,
-      row.leadership_notes || "—",
-    ];
+    return [row.year || "—", score > 0 ? `${score} / 5` : "—", label, row.leadership_notes || "—"];
   });
 
   autoTable(pdf, {
@@ -397,12 +416,12 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
   if (y > H - 140) { pdf.addPage(); y = 50; }
   sectionHead(
     "05  OPERATIONAL GAP SUMMARY",
-    "Documented gaps from each engagement cycle and their operational impact. These are patterns, not anomalies - and patterns have solutions."
+    "Documented gaps from each engagement cycle and their operational impact. These are patterns, not anomalies — and patterns have solutions."
   );
 
   const gapRows = historicalData
     .filter(r => r.operational_gaps)
-    .map(r => [r.year || "—", r.operational_gaps]);
+    .map(r => [r.year || "—", r.pre_axis ? `[Pre-Axis] ${r.operational_gaps}` : r.operational_gaps]);
 
   if (gapRows.length > 0) {
     autoTable(pdf, {
@@ -471,11 +490,13 @@ function generatePDF({ event, historicalData, checkInData, attendees }) {
   const reqStaff = attInt > 0 ? Math.ceil(attInt / BENCHMARKS.staffing_ratio) : 0;
   const staffRows = historicalData.map(row => {
     const shown = parseInt(row.day_of_show) || 0;
-    const gap = reqStaff > 0 ? reqStaff - shown : 0;
+    const rowAttendees = parseInt(row.attendee_count) || attInt;
+    const rowReqStaff = rowAttendees > 0 ? Math.ceil(rowAttendees / BENCHMARKS.staffing_ratio) : 0;
+    const gap = rowReqStaff > 0 ? rowReqStaff - shown : 0;
     return [
       row.year || "—",
-      fmt(attInt),
-      fmt(reqStaff),
+      fmt(rowAttendees),
+      fmt(rowReqStaff),
       fmt(shown),
       gap > 0 ? `${fmt(gap)} short` : "Covered",
       gap > 0 ? "UNDERSTAFFED" : "OK",
@@ -559,7 +580,6 @@ export default function IntelligenceTab({ event, eventId }) {
   const [checkInLoading, setCheckInLoading] = useState(false);
   const attendees = event?.attendee_count || "";
 
-  // Load saved intelligence data
   useEffect(() => {
     const load = async () => {
       setLoading(true);
@@ -577,7 +597,6 @@ export default function IntelligenceTab({ event, eventId }) {
     load();
   }, [eventId]);
 
-  // Auto-pull check-in data
   useEffect(() => {
     const pullCheckIns = async () => {
       if (!event?.name) return;
@@ -599,8 +618,7 @@ export default function IntelligenceTab({ event, eventId }) {
     setHistoricalData(prev => prev.map((r, i) => i === idx ? { ...r, [field]: value } : r));
   };
 
-  const addYear = () => setHistoricalData(prev => [...prev, { ...EMPTY_YEAR }]);
-
+  const addYear    = () => setHistoricalData(prev => [...prev, { ...EMPTY_YEAR }]);
   const removeYear = (idx) => {
     if (historicalData.length <= 1) return;
     setHistoricalData(prev => prev.filter((_, i) => i !== idx));
@@ -633,8 +651,7 @@ export default function IntelligenceTab({ event, eventId }) {
     setExporting(false);
   };
 
-  // Aggregate stats across all years for the summary bar
-  const totalApps  = historicalData.reduce((s, r) => s + (parseInt(r.applications) || 0), 0);
+  const totalApps  = historicalData.filter(r => !r.pre_axis).reduce((s, r) => s + (parseInt(r.applications) || 0), 0);
   const totalShown = historicalData.reduce((s, r) => s + (parseInt(r.day_of_show) || 0), 0);
   const avgDropoff = totalApps > 0 ? ((totalApps - totalShown) / totalApps) : null;
   const attnInt    = parseInt(attendees) || 0;
@@ -652,8 +669,7 @@ export default function IntelligenceTab({ event, eventId }) {
       {/* Header bar */}
       <div style={{
         display: "flex", alignItems: "flex-start", justifyContent: "space-between",
-        padding: "18px 20px", borderRadius: 12,
-        background: theme.primary, gap: 16,
+        padding: "18px 20px", borderRadius: 12, background: theme.primary, gap: 16,
       }}>
         <div>
           <div style={{ fontSize: 10, fontWeight: 700, color: theme.accent, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 4 }}>
@@ -664,58 +680,49 @@ export default function IntelligenceTab({ event, eventId }) {
           </div>
           <div style={{ fontSize: 12, color: "rgba(255,255,255,0.65)" }}>
             {historicalData.length} year{historicalData.length !== 1 ? "s" : ""} of data
-            {checkInLoading ? " · Loading check-ins…" : checkInData.length > 0 ? ` · ${checkInData.length} check-in records (last year)` : ""}
+            {historicalData.filter(r => r.pre_axis).length > 0 && ` · ${historicalData.filter(r => r.pre_axis).length} pre-Axis`}
+            {checkInLoading ? " · Loading check-ins…" : checkInData.length > 0 ? ` · ${checkInData.length} check-in records` : ""}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-          <button
-            onClick={saveData}
-            disabled={saving}
-            style={{
-              padding: "9px 18px", borderRadius: 8, border: "none", cursor: "pointer",
-              background: saved ? GAP_GREEN : "rgba(255,255,255,0.15)",
-              color: "#fff", fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
-              transition: "all 0.2s",
-            }}>
+          <button onClick={saveData} disabled={saving} style={{
+            padding: "9px 18px", borderRadius: 8, border: "none", cursor: "pointer",
+            background: saved ? GAP_GREEN : "rgba(255,255,255,0.15)",
+            color: "#fff", fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
+            transition: "all 0.2s",
+          }}>
             {saving ? "Saving…" : saved ? "✓ Saved" : "Save Data"}
           </button>
-          <button
-            onClick={handleExport}
-            disabled={exporting || historicalData.every(r => !r.year)}
-            style={{
-              padding: "9px 18px", borderRadius: 8, border: "none", cursor: "pointer",
-              background: theme.accent, color: theme.primary,
-              fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
-            }}>
+          <button onClick={handleExport} disabled={exporting || historicalData.every(r => !r.year)} style={{
+            padding: "9px 18px", borderRadius: 8, border: "none", cursor: "pointer",
+            background: theme.accent, color: theme.primary,
+            fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
+          }}>
             {exporting ? "Generating…" : "⬇ Export PDF Report"}
           </button>
         </div>
       </div>
 
       {/* Summary stats bar */}
-      {totalApps > 0 && (
-        <div style={{
-          display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12,
-        }}>
+      {(totalApps > 0 || totalShown > 0) && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
           {[
             {
               label: "Total Applications",
               value: fmt(totalApps),
-              sub: `across ${historicalData.length} year${historicalData.length !== 1 ? "s" : ""}`,
+              sub: totalApps === 0 ? "Pre-Axis years only" : `across ${historicalData.filter(r => !r.pre_axis).length} Axis year(s)`,
               ok: true,
             },
             {
               label: "Total Day-Of Show",
               value: fmt(totalShown),
-              sub: pct(totalShown, totalApps) + " of applicants",
+              sub: totalApps > 0 ? pct(totalShown, totalApps) + " of applicants" : "All years combined",
               ok: null,
             },
             {
               label: "Avg Drop-Off Rate",
               value: avgDropoff !== null ? `${Math.round(avgDropoff * 100)}%` : "—",
-              sub: `Benchmark: ${BENCHMARKS.healthy_dropoff_label}`,
-              ok: avgDropoff !== null && avgDropoff <= BENCHMARKS.healthy_dropoff_max,
-              warn: false,
+              sub: avgDropoff !== null ? `Benchmark: ${BENCHMARKS.healthy_dropoff_label}` : "Axis years only",
               bad: avgDropoff !== null && avgDropoff > BENCHMARKS.healthy_dropoff_max,
             },
             {
@@ -726,7 +733,7 @@ export default function IntelligenceTab({ event, eventId }) {
             },
           ].map((stat, i) => (
             <div key={i} style={{
-              padding: "14px 16px", borderRadius: 10, background: "#fff",
+              padding: "14px 16px", borderRadius: 10,
               border: `1.5px solid ${stat.bad ? GAP_RED + "44" : theme.border}`,
               background: stat.bad ? GAP_SOFT(GAP_RED) : "#fff",
             }}>
@@ -752,7 +759,7 @@ export default function IntelligenceTab({ event, eventId }) {
           <div>
             <div style={{ fontSize: 13, fontWeight: 700, color: theme.text }}>Historical Data Entry</div>
             <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 2 }}>
-              Enter year-by-year data. Most recent year first. Check-in data for the most recent year is auto-pulled from Axis.
+              Enter year-by-year data. Check "Pre-Axis Year" for years before Axis deployment — application data won't be required.
             </div>
           </div>
           <button onClick={addYear} style={{
@@ -768,24 +775,25 @@ export default function IntelligenceTab({ event, eventId }) {
           {historicalData.map((row, idx) => {
             const analysis = analyzeYear(row, attendees);
             return (
-              <div key={idx} style={{
-                borderRadius: 10, border: `1.5px solid ${theme.border}`,
-                overflow: "hidden",
-              }}>
+              <div key={idx} style={{ borderRadius: 10, border: `1.5px solid ${theme.border}`, overflow: "hidden" }}>
+
                 {/* Year header */}
                 <div style={{
                   padding: "10px 16px", background: theme.primary,
                   display: "flex", alignItems: "center", justifyContent: "space-between",
                 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>
-                    {row.year ? `Year ${row.year}` : `Year ${idx + 1} — enter year below`}
+                    {row.year ? `Year ${row.year}${row.pre_axis ? " — Pre-Axis" : ""}` : `Year ${idx + 1} — enter year below`}
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    {row.pre_axis && (
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                        background: "rgba(217,119,6,0.2)", color: GAP_AMBER, border: "1px solid rgba(217,119,6,0.4)",
+                      }}>Pre-Axis</span>
+                    )}
                     {analysis.dropoff !== null && (
-                      <GapBadge
-                        ok={!analysis.dropoffExcessive}
-                        label={`${Math.round(analysis.dropoff * 100)}% drop-off`}
-                      />
+                      <GapBadge ok={!analysis.dropoffExcessive} label={`${Math.round(analysis.dropoff * 100)}% drop-off`} />
                     )}
                     {analysis.timelineCompressed && (
                       <GapBadge ok={false} label="Timeline compressed" />
@@ -801,6 +809,7 @@ export default function IntelligenceTab({ event, eventId }) {
                 </div>
 
                 <div style={{ padding: "16px" }}>
+
                   {/* Row 1: year + dates */}
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
                     <FieldInput label="Year *" placeholder="e.g. 2024"
@@ -813,14 +822,62 @@ export default function IntelligenceTab({ event, eventId }) {
                       value={row.event_date} onChange={v => updateRow(idx, "event_date", v)} />
                   </div>
 
+                  {/* Pre-Axis toggle */}
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: 10, marginBottom: 10,
+                    padding: "10px 14px", borderRadius: 8,
+                    background: row.pre_axis ? "rgba(217,119,6,0.06)" : theme.background,
+                    border: `1px solid ${row.pre_axis ? "rgba(217,119,6,0.25)" : theme.border}`,
+                  }}>
+                    <input
+                      type="checkbox"
+                      id={`pre_axis_${idx}`}
+                      checked={!!row.pre_axis}
+                      onChange={e => updateRow(idx, "pre_axis", e.target.checked)}
+                      style={{ width: 16, height: 16, cursor: "pointer", accentColor: "#D97706" }}
+                    />
+                    <label htmlFor={`pre_axis_${idx}`} style={{ cursor: "pointer", userSelect: "none" }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: row.pre_axis ? "#D97706" : theme.textMuted }}>
+                        Pre-Axis Year
+                      </span>
+                      <span style={{ fontSize: 11, color: theme.textMuted, marginLeft: 8 }}>
+                        {row.pre_axis
+                          ? "No application data available — check-in/out counts only"
+                          : "Axis data available — enter full metrics below"}
+                      </span>
+                    </label>
+                  </div>
+
                   {/* Row 2: numbers */}
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
-                    <FieldInput label="Applications Received" placeholder="e.g. 350" type="number"
-                      value={row.applications} onChange={v => updateRow(idx, "applications", v)} />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+
+                    <FieldInput label="Attendee Count (that year)" placeholder="e.g. 8000" type="number"
+                      value={row.attendee_count} onChange={v => updateRow(idx, "attendee_count", v)} />
+
+                    {/* Applications — hidden for pre-Axis */}
+                    {row.pre_axis ? (
+                      <div style={{
+                        padding: "10px 12px", borderRadius: 6,
+                        background: "rgba(217,119,6,0.06)", border: "1px solid rgba(217,119,6,0.2)",
+                        display: "flex", alignItems: "center",
+                      }}>
+                        <div>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: "#D97706", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>
+                            Applications
+                          </div>
+                          <div style={{ fontSize: 11, color: "#D97706" }}>Not available (Pre-Axis)</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <FieldInput label="Applications Received" placeholder="e.g. 350" type="number"
+                        value={row.applications} onChange={v => updateRow(idx, "applications", v)} />
+                    )}
+
                     <FieldInput label="Confirmed / Onboarded" placeholder="e.g. 80" type="number"
                       value={row.confirmed} onChange={v => updateRow(idx, "confirmed", v)} />
                     <FieldInput label="Day-Of Show Count" placeholder="e.g. 55" type="number"
                       value={row.day_of_show} onChange={v => updateRow(idx, "day_of_show", v)} />
+
                     <div>
                       <label style={labelStyle}>Leadership Score (1–5)</label>
                       <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
@@ -877,9 +934,7 @@ export default function IntelligenceTab({ event, eventId }) {
                           <div style={{ fontSize: 16, fontWeight: 800, color: analysis.dropoffExcessive ? GAP_RED : GAP_GREEN }}>
                             {Math.round(analysis.dropoff * 100)}%
                           </div>
-                          <div style={{ fontSize: 10, color: theme.textMuted }}>
-                            Benchmark: {BENCHMARKS.healthy_dropoff_label}
-                          </div>
+                          <div style={{ fontSize: 10, color: theme.textMuted }}>Benchmark: {BENCHMARKS.healthy_dropoff_label}</div>
                         </div>
                       )}
                       {analysis.engToEvent !== null && (
@@ -928,9 +983,7 @@ export default function IntelligenceTab({ event, eventId }) {
             background: theme.background, display: "flex", alignItems: "center", justifyContent: "space-between",
           }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: theme.text }}>
-                Axis Check-In Data — Most Recent Year
-              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: theme.text }}>Axis Check-In Data — Most Recent Year</div>
               <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 1 }}>
                 {checkInData.length} records auto-pulled from Axis · Included in PDF export
               </div>
@@ -983,36 +1036,11 @@ export default function IntelligenceTab({ event, eventId }) {
           <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 1 }}>Research-backed standards used for gap analysis and PDF report</div>
         </div>
         <div style={{ padding: "16px 20px" }}>
-          <MetricRow
-            label="Staffing ratio — tech conference"
-            value="1 : 75 attendees"
-            sub="General ops/guest services floor coverage"
-            badge={<GapBadge ok label="Industry standard" />}
-          />
-          <MetricRow
-            label="Acceptable drop-off rate"
-            value="10–20%"
-            sub="Plan for 10–20% attrition; recruit accordingly"
-            badge={<GapBadge ok label="Benchmark range" />}
-          />
-          <MetricRow
-            label="Ideal recruitment start"
-            value="180 days out"
-            sub="6 months: define needs, develop job descriptions"
-            badge={<GapBadge ok label="Best practice" />}
-          />
-          <MetricRow
-            label="First orientation window"
-            value="60+ days out"
-            sub="Enough lead time to absorb attrition before event"
-            badge={<GapBadge ok label="Best practice" />}
-          />
-          <MetricRow
-            label="Recruitment buffer"
-            value="+15–20% over target"
-            sub="If you need 100, recruit 115–120"
-            badge={<GapBadge ok label="Best practice" />}
-          />
+          <MetricRow label="Staffing ratio — tech conference" value="1 : 75 attendees" sub="General ops/guest services floor coverage" badge={<GapBadge ok label="Industry standard" />} />
+          <MetricRow label="Acceptable drop-off rate" value="10–20%" sub="Plan for 10–20% attrition; recruit accordingly" badge={<GapBadge ok label="Benchmark range" />} />
+          <MetricRow label="Ideal recruitment start" value="180 days out" sub="6 months: define needs, develop job descriptions" badge={<GapBadge ok label="Best practice" />} />
+          <MetricRow label="First orientation window" value="60+ days out" sub="Enough lead time to absorb attrition before event" badge={<GapBadge ok label="Best practice" />} />
+          <MetricRow label="Recruitment buffer" value="+15–20% over target" sub="If you need 100, recruit 115–120" badge={<GapBadge ok label="Best practice" />} />
           <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 8, background: theme.background, fontSize: 10, color: theme.textMuted, lineHeight: 1.6 }}>
             <strong>Sources:</strong> {BENCHMARKS.sources.join("  ·  ")}
           </div>

@@ -11,6 +11,7 @@ import {
   addDoc,
   query,
   where,
+  orderBy,
   writeBatch,
 } from "firebase/firestore";
 import jsPDF from "jspdf";
@@ -795,6 +796,23 @@ const anonymizeRecord = (data, map) => {
   return result;
 };
 
+const DOC_TYPE_LABELS = {
+  proposal:     'Proposal',
+  sow:          'Statement of Work',
+  msa:          'Master Service Agreement',
+  ic_agreement: 'IC Agreement',
+  waiver:       'Third-Party Staffing Waiver',
+  invoice:      'Invoice',
+};
+ 
+const STATUS_COLORS = {
+  draft:          { color: '#6B7280', bg: 'rgba(107,114,128,0.1)' },
+  pending_review: { color: '#D97706', bg: 'rgba(217,119,6,0.1)'   },
+  approved:       { color: '#2d7a46', bg: 'rgba(45,122,70,0.1)'   },
+  sent:           { color: '#1C4A36', bg: 'rgba(28,74,54,0.1)'    },
+  signed:         { color: '#2d7a46', bg: 'rgba(45,122,70,0.15)'  },
+};
+
 export default function EventCommand() {
   const { eventId } = useParams();
   const { activeUser } = useAuth();
@@ -910,6 +928,10 @@ export default function EventCommand() {
   const [denyingId, setDenyingId] = useState(null);
   const [denyReason, setDenyReason] = useState("");
 
+  // Document Reconciling
+  const [mmDocs, setMmDocs] = useState([]);
+  const [mmDocsLoading, setMmDocsLoading] = useState(false);
+
   useEffect(() => {
     const load = async () => {
       const [snap, rosterSnap, clientStaffSnap] = await Promise.all([
@@ -926,6 +948,7 @@ export default function EventCommand() {
         if (data.drive_folder_url) {
           loadDriveDocs(data.drive_folder_url);
         }
+        loadMMDocs();
         // Load deliverables
         if (data.deliverables) {
           setDeliverables(data.deliverables);
@@ -984,6 +1007,24 @@ export default function EventCommand() {
     }
     setDriveLoading(false);
   };
+
+  const loadMMDocs = async () => {
+  if (!eventId) return;
+  setMmDocsLoading(true);
+  try {
+    const snap = await getDocs(
+      query(
+        collection(db, 'mm_documents'),
+        where('eventId', '==', eventId),
+        orderBy('createdAt', 'desc')
+      )
+    );
+    setMmDocs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  } catch (e) {
+    console.error('loadMMDocs error:', e);
+  }
+  setMmDocsLoading(false);
+};
 
   // Load volunteer profiles + attendance for scoring when staff tab opens
   const loadStaffProfiles = async () => {
@@ -5908,240 +5949,118 @@ export default function EventCommand() {
 
           {/* Docs */}
           <Card style={{ marginBottom: 16 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 12,
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: theme.textMuted,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.08em",
-                }}
-              >
-                Docs & Files
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+    <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+      Docs & Files
+    </div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {event.drive_folder_url && (
+        <a href={event.drive_folder_url} target="_blank" rel="noreferrer"
+          style={{ fontSize: 11, fontWeight: 700, color: primaryColor, textDecoration: 'none' }}>
+          📁 Open Folder ↗
+        </a>
+      )}
+      <button
+        onClick={() => navigate(`/documents?event_id=${eventId}`)}
+        style={{
+          fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 6,
+          background: primaryColor, color: '#fff', border: 'none', cursor: 'pointer',
+          fontFamily: "'DM Sans', sans-serif",
+        }}>
+        + Generate Docs
+      </button>
+    </div>
+  </div>
+ 
+   {/* /* ── Generated docs from mm_documents ── * /  */}
+  {mmDocsLoading && (
+    <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 8 }}>Loading generated docs…</div>
+  )}
+  {!mmDocsLoading && mmDocs.length > 0 && (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+        Generated Documents ({mmDocs.length})
+      </div>
+      {mmDocs.map(d => {
+        const statusCfg = STATUS_COLORS[d.status] || STATUS_COLORS.draft;
+        const statusLabel = {
+          draft: 'Draft', pending_review: 'Pending Review',
+          approved: '✓ Approved', sent: 'Sent', signed: '✓ Signed',
+        }[d.status] || 'Draft';
+        return (
+          <div key={d.id} style={{ padding: '8px 0', borderBottom: `1px solid ${theme.border}`, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 13 }}>📄</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <a href={d.url} target="_blank" rel="noreferrer"
+                style={{ fontSize: 12, color: primaryColor, fontWeight: 600, textDecoration: 'none', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {DOC_TYPE_LABELS[d.docType] || d.docType} ↗
+              </a>
+              <div style={{ fontSize: 10, color: theme.textMuted }}>
+                by {d.generatedBy}
+                {d.approvedBy ? ` · Approved by ${d.approvedBy}` : ''}
               </div>
-              {event.drive_folder_url && (
-                <a
-                  href={event.drive_folder_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 700,
-                    color: primaryColor,
-                    textDecoration: "none",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 4,
-                  }}
-                >
-                  📁 Open Folder ↗
-                </a>
-              )}
             </div>
-
-            {/* Drive docs — auto-loaded from event folder */}
-            {driveLoading && (
-              <div
-                style={{
-                  fontSize: 12,
-                  color: theme.textMuted,
-                  marginBottom: 8,
-                }}
-              >
-                Loading docs from Drive…
-              </div>
-            )}
-            {!driveLoading && driveDocs.length > 0 && (
-              <div style={{ marginBottom: 14 }}>
-                <div
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    color: theme.textMuted,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.06em",
-                    marginBottom: 6,
-                  }}
-                >
-                  From Drive Folder ({driveDocs.length})
-                </div>
-                {driveDocs.map((f) => (
-                  <div
-                    key={f.id}
-                    style={{
-                      padding: "6px 0",
-                      borderBottom: `1px solid ${theme.border}`,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                    }}
-                  >
-                    <span style={{ fontSize: 13 }}>
-                      {f.mimeType?.includes("document")
-                        ? "📄"
-                        : f.mimeType?.includes("spreadsheet")
-                          ? "📊"
-                          : f.mimeType?.includes("presentation")
-                            ? "📊"
-                            : f.mimeType?.includes("pdf")
-                              ? "📋"
-                              : "📎"}
-                    </span>
-                    <a
-                      href={f.webViewLink}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{
-                        fontSize: 12,
-                        color: primaryColor,
-                        fontWeight: 600,
-                        textDecoration: "none",
-                        flex: 1,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {f.name}
-                    </a>
-                  </div>
-                ))}
-              </div>
-            )}
-            {!driveLoading &&
-              driveDocs.length === 0 &&
-              event.drive_folder_url && (
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: theme.textMuted,
-                    marginBottom: 10,
-                  }}
-                >
-                  No files in Drive folder yet.{" "}
-                  <button
-                    onClick={() => loadDriveDocs(event.drive_folder_url)}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      color: primaryColor,
-                      cursor: "pointer",
-                      fontSize: 12,
-                      fontWeight: 600,
-                      padding: 0,
-                    }}
-                  >
-                    Refresh ↺
-                  </button>
-                </div>
-              )}
-
-            {/* Manually added docs */}
-            {(event.docs || []).length > 0 && (
-              <div style={{ marginBottom: 10 }}>
-                <div
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    color: theme.textMuted,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.06em",
-                    marginBottom: 6,
-                  }}
-                >
-                  Manual Links
-                </div>
-                {(event.docs || []).map((d, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      padding: "6px 0",
-                      borderBottom: `1px solid ${theme.border}`,
-                    }}
-                  >
-                    {d.url ? (
-                      <a
-                        href={d.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{
-                          fontSize: 12,
-                          color: primaryColor,
-                          fontWeight: 600,
-                          textDecoration: "none",
-                        }}
-                      >
-                        {d.label}
-                      </a>
-                    ) : (
-                      <div style={{ fontSize: 12, color: theme.text }}>
-                        {d.label}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Add manual doc */}
-            <div
-              style={{
-                marginTop: 10,
-                display: "flex",
-                flexDirection: "column",
-                gap: 6,
-              }}
-            >
-              <input
-                value={newDoc.label}
-                onChange={(e) =>
-                  setNewDoc((d) => ({ ...d, label: e.target.value }))
-                }
-                placeholder="Add a link label"
-                style={{
-                  padding: "7px 10px",
-                  borderRadius: 6,
-                  border: `1px solid ${theme.border}`,
-                  fontSize: 12,
-                  fontFamily: "'DM Sans', sans-serif",
-                  outline: "none",
-                  color: theme.text,
-                }}
-              />
-              <input
-                value={newDoc.url}
-                onChange={(e) =>
-                  setNewDoc((d) => ({ ...d, url: e.target.value }))
-                }
-                placeholder="URL (optional)"
-                style={{
-                  padding: "7px 10px",
-                  borderRadius: 6,
-                  border: `1px solid ${theme.border}`,
-                  fontSize: 12,
-                  fontFamily: "'DM Sans', sans-serif",
-                  outline: "none",
-                  color: theme.text,
-                }}
-              />
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={addEventDoc}
-                disabled={!newDoc.label.trim() || saving}
-              >
-                Add Link
-              </Button>
-            </div>
-          </Card>
+            <span style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999,
+              background: statusCfg.bg, color: statusCfg.color, whiteSpace: 'nowrap',
+            }}>
+              {statusLabel}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  )}
+ 
+  {/* /* ── Drive docs ── * /  */}
+  {driveLoading && (
+    <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 8 }}>Loading Drive docs…</div>
+  )}
+  {!driveLoading && driveDocs.length > 0 && (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+        From Drive Folder ({driveDocs.length})
+      </div>
+      {driveDocs.map(f => (
+        <div key={f.id} style={{ padding: '6px 0', borderBottom: `1px solid ${theme.border}`, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 13 }}>
+            {f.mimeType?.includes('document') ? '📄' : f.mimeType?.includes('spreadsheet') ? '📊' : f.mimeType?.includes('pdf') ? '📋' : '📎'}
+          </span>
+          <a href={f.webViewLink} target="_blank" rel="noreferrer"
+            style={{ fontSize: 12, color: primaryColor, fontWeight: 600, textDecoration: 'none', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {f.name}
+          </a>
+        </div>
+      ))}
+    </div>
+  )}
+ 
+   {/* /* ── Manual links ── * /  */}
+  {(event.docs || []).length > 0 && (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+        Manual Links
+      </div>
+      {(event.docs || []).map((d, i) => (
+        <div key={i} style={{ padding: '6px 0', borderBottom: `1px solid ${theme.border}` }}>
+          {d.url
+            ? <a href={d.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: primaryColor, fontWeight: 600, textDecoration: 'none' }}>{d.label}</a>
+            : <div style={{ fontSize: 12, color: theme.text }}>{d.label}</div>
+          }
+        </div>
+      ))}
+    </div>
+  )}
+ 
+  {/* /* ── Add manual doc ── * /  */}
+  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <input value={newDoc.label} onChange={e => setNewDoc(d => ({ ...d, label: e.target.value }))}
+      placeholder="Add a link label" style={{ padding: '7px 10px', borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: 'none', color: theme.text }} />
+    <input value={newDoc.url} onChange={e => setNewDoc(d => ({ ...d, url: e.target.value }))}
+      placeholder="URL (optional)" style={{ padding: '7px 10px', borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: 'none', color: theme.text }} />
+    <Button size="sm" variant="outline" onClick={addEventDoc} disabled={!newDoc.label.trim() || saving}>Add Link</Button>
+  </div>
+</Card>
 
           {/* Deliverables */}
           <Card style={{ marginBottom: 16 }}>
