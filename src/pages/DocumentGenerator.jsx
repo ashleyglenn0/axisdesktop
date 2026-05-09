@@ -467,10 +467,19 @@ export default function DocumentGenerator() {
         operatorName: operator,
         eventId: contextMode === "event" ? selectedContext.id : null,
         engagementId: contextMode === "engagement" ? selectedContext.id : null,
+        pipelineId: contextMode === "engagement" ? selectedContext.id : null, // ADD
         counterpartyName,
         counterpartyEmail,
         counterpartyUid,
       });
+
+      // Write proposal_doc_id back to pipeline record so Pipeline.jsx gate clears
+      if (docType === "proposal" && contextMode === "engagement") {
+        await updateDoc(doc(db, "pipeline", selectedContext.id), {
+          proposal_doc_id: result.data.documentId,
+          proposal_doc_url: url,
+        });
+      }
 
       setGeneratedDocs((p) => ({
         ...p,

@@ -21,7 +21,7 @@ const TEMPLATES_FOLDER_ID  = '1L4TMWekY4QBHoMDP2wVzp6xvFZtCgw5x';
 const CLIENTS_FOLDER_ID    = '18blEQkYN3kEvM8MWrq7pKrmAUt4p-2Os';
 
 const MM_SIGNERS = {
-  ASHLEY:  { name: 'Ashley Glenn',      email: process.env.ASHLEY_EMAIL  || 'ashleyg@motionmethodgroup.com',  role: 'Founder' },
+  ASHLEY:  { name: 'Ashley Glenn',      email: process.env.ASHLEY_EMAIL  || 'ashley@motionmethodgroup.com',  role: 'Founder' },
   MIKAL:   { name: 'Mikal Driver',      email: process.env.MIKAL_EMAIL   || 'mikal@motionmethodgroup.com',    role: 'Founder' },
   SHANELL: { name: 'Shanell Jefferson', email: process.env.SHANELL_EMAIL || 'shanell@motionmethodgroup.com',  role: 'Senior Ops Manager' },
 };
@@ -505,7 +505,7 @@ exports.saveMMDocRecord = onCall(async (request) => {
   const {
     filename, url, docType, storagePath, contextId, contextName,
     operatorName, eventId, engagementId, counterpartyName,
-    counterpartyEmail, counterpartyUid,
+    counterpartyEmail, counterpartyUid, pipelineId
   } = request.data;
 
   if (!filename || !url || !docType) {
@@ -523,6 +523,7 @@ exports.saveMMDocRecord = onCall(async (request) => {
       contextName:  contextName  || null,
       eventId:      eventId      || null,
       engagementId: engagementId || null,
+      pipelineId:   pipelineId   || null,
       operatorName:      operatorName      || null,
       generatedBy:       operatorName      || null,
       counterpartyName:  counterpartyName  || null,
@@ -600,7 +601,7 @@ const EMAILJS_PUBLIC_KEY  = process.env.EMAILJS_PUBLIC_KEY  || '';
 const EMAILJS_PRIVATE_KEY = process.env.EMAILJS_PRIVATE_KEY || '';
 
 const REVIEWER_EMAILS = {
-  'Ashley Glenn':      { email: process.env.ASHLEY_EMAIL  || 'ashleyg@motionmethodgroup.com',  name: 'Ashley' },
+  'Ashley Glenn':      { email: process.env.ASHLEY_EMAIL  || 'ashley@motionmethodgroup.com',  name: 'Ashley' },
   'Mikal Driver':      { email: process.env.MIKAL_EMAIL   || 'mikal@motionmethodgroup.com',    name: 'Mikal'  },
 };
 
@@ -666,13 +667,6 @@ exports.shareMMDocForReview = onCall(async (request) => {
     const docData   = docSnap.data();
     const reviewers = docData.reviewers || [];
 
-    await db.collection('mm_documents').doc(documentId).update({
-      status:    'pending_review',
-      sharedBy:  sharedBy || null,
-      sharedAt:  admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
     // Send email to each reviewer
     const emailResults = [];
     for (const reviewerName of reviewers) {
@@ -699,6 +693,18 @@ exports.shareMMDocForReview = onCall(async (request) => {
         emailResults.push({ reviewer: reviewerName, sent: false, error: emailErr.message });
       }
     }
+
+    const anySuccess = emailResults.some(r => r.sent);
+    if (!anySuccess) {
+      throw new HttpsError('internal', `Email delivery failed for all reviewers: ${emailResults.map(r => r.error).join('; ')}`);
+    }
+
+    await db.collection('mm_documents').doc(documentId).update({
+      status:    'pending_review',
+      sharedBy:  sharedBy || null,
+      sharedAt:  admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
 
     await db.collection('activity_log').add({
       description: `Document shared for review by ${sharedBy} — reviewers: ${reviewers.join(', ')}`,

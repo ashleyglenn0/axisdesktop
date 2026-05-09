@@ -9,6 +9,7 @@ const NAV = [
   { to: "/leads",            label: "Leads",            icon: "◈" },
   { to: "/pipeline",         label: "Pipeline",         icon: "⬢" },
   { to: "/pricing",  label: "Pricing",  icon: "◆" }, 
+  { to: "/hr", label: "Human Resources", icon: "⬡"},
   { to: "/crew-pool",        label: "Talent Pool",      icon: "◎" },
   { to: "/activation-setup", label: "Activation Queue", icon: "◇" },
   { to: '/documents', label: 'Documents', icon: '◎' },

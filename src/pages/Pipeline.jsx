@@ -1,25 +1,29 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   collection, getDocs, doc, updateDoc, addDoc, deleteDoc,
-  serverTimestamp, query, orderBy,
+  serverTimestamp, query, orderBy, where,
 } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { db } from "../firebase";
 import { useAuth } from "../hooks/useAuth";
 import { theme } from "../theme";
-import { Card, Button, Badge, Spinner, EmptyState, Input, Textarea, LifecyclePill } from "../components/UI";
+import { Card, Button, Badge, Spinner, EmptyState } from "../components/UI";
 import PipelinePricingPanel from "../components/pricing/PricingPanel";
 
-// ─── STAGE CONFIG ──────────────────────────────────────────────────────────────
+const functions = getFunctions();
+const sendMMPortalInviteFn = httpsCallable(functions, "sendMMPortalInvite");
+
+// ─── STAGE CONFIG ─────────────────────────────────────────────────────────────
 const STAGES = [
-  { key: "intake_received",        label: "Intake Received",        short: "Intake" },
-  { key: "awaiting_qualification", label: "Awaiting Qualification", short: "Qual" },
+  { key: "intake_received",        label: "Intake Received",        short: "Intake"    },
+  { key: "awaiting_qualification", label: "Awaiting Qualification", short: "Qual"      },
   { key: "approved_for_discovery", label: "Approved for Discovery", short: "Discovery" },
-  { key: "discovery_complete",     label: "Discovery Complete",     short: "Pricing" },
-  { key: "pricing_approved",       label: "Pricing Approved",       short: "Proposal" },
-  { key: "proposal_sent",          label: "Proposal Sent",          short: "Closing" },
-  { key: "active",                 label: "Active",                 short: "Active" },
-  { key: "declined",               label: "Declined",               short: "Declined" },
+  { key: "discovery_complete",     label: "Discovery Complete",     short: "Pricing"   },
+  { key: "pricing_approved",       label: "Pricing Approved",       short: "Proposal"  },
+  { key: "proposal_sent",          label: "Proposal Sent",          short: "Closing"   },
+  { key: "active",                 label: "Active",                 short: "Active"    },
+  { key: "declined",               label: "Declined",               short: "Declined"  },
 ];
 
 const STAGE_COLORS = {
@@ -34,8 +38,6 @@ const STAGE_COLORS = {
 };
 
 const FOUNDERS = ["Ashley", "Mikal"];
-
-const stageIndex = (key) => STAGES.findIndex(s => s.key === key);
 
 // ─── FIELD COMPONENTS ─────────────────────────────────────────────────────────
 const Field = ({ label, value, onChange, type = "text", placeholder = "", required = false, options = null, rows = 3 }) => {
@@ -67,8 +69,7 @@ const Field = ({ label, value, onChange, type = "text", placeholder = "", requir
       ) : (
         <input type={type} value={value || ""} onChange={e => onChange(e.target.value)}
           onFocus={() => setFoc(true)} onBlur={() => setFoc(false)}
-          placeholder={placeholder}
-          style={baseInput} />
+          placeholder={placeholder} style={baseInput} />
       )}
     </div>
   );
@@ -108,7 +109,7 @@ function QualForm({ data, onChange }) {
           { value: "P3", label: "P3 — Joint Planning / Co-Execution" },
           { value: "P4", label: "P4 — Infrastructure Advisory" },
         ]} />
-      <Field label="Notes" type="textarea" rows={3} {...f("qual_notes")} placeholder="Anything else worth capturing from this conversation…" />
+      <Field label="Notes" type="textarea" rows={3} {...f("qual_notes")} placeholder="Anything else worth capturing…" />
     </div>
   );
 }
@@ -136,85 +137,12 @@ function DiscoveryForm({ data, onChange }) {
           ]} />
       </TwoCol>
       <Field label="Scope Notes" type="textarea" rows={3} required {...f("disc_scope_notes")}
-        placeholder="What specifically do they need from M&M? Staffing, facilitation, full buildout…" />
+        placeholder="What specifically do they need from M&M?" />
       <Field label="Stakeholders Involved" type="textarea" rows={2} {...f("disc_stakeholders")}
-        placeholder="Who else is in the room? Marketing, executive sponsor, board…" />
+        placeholder="Who else is in the room?" />
       <Field label="Risks or Flags" type="textarea" rows={2} {...f("disc_risks")}
-        placeholder="Timeline concerns, unclear scope, competing vendors, budget tension…" />
+        placeholder="Timeline concerns, unclear scope, competing vendors…" />
       <Field label="Notes" type="textarea" rows={2} {...f("disc_notes")} />
-    </div>
-  );
-}
-
-function PricingForm({ data, onChange, matrixViewed, onMatrixOpen }) {
-  const f = (key) => ({ value: data[key] || "", onChange: (v) => onChange(key, v) });
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ padding: "14px 16px", borderRadius: 10, background: "rgba(235,199,100,0.12)", border: `1px solid ${matrixViewed ? "rgba(88,176,108,0.4)" : "rgba(235,199,100,0.4)"}` }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: matrixViewed ? "#2d7a46" : "#8a6800", marginBottom: 6 }}>
-          {matrixViewed ? "✓ PRICING MATRIX REVIEWED" : "PRICING MATRIX — REQUIRED"}
-        </div>
-        <div style={{ fontSize: 13, color: theme.text, marginBottom: 10 }}>
-          {matrixViewed
-            ? "Matrix reviewed. Enter the confirmed tier and price below."
-            : "You must open the pricing matrix before entering a tier. This ensures consistent pricing."}
-        </div>
-        <a
-          href="https://docs.google.com/spreadsheets/d/YOUR_PRICING_MATRIX_ID"
-          target="_blank"
-          rel="noreferrer"
-          onClick={onMatrixOpen}
-          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, background: matrixViewed ? theme.secondary : theme.primary, color: "#fff", fontSize: 12, fontWeight: 600, textDecoration: "none" }}
-        >
-          {matrixViewed ? "Open Again ↗" : "Open Pricing Matrix ↗"}
-        </a>
-      </div>
-      <div style={{ opacity: matrixViewed ? 1 : 0.4, pointerEvents: matrixViewed ? "auto" : "none" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <TwoCol>
-            <Field label="Selected Tier" required {...f("pricing_tier")}
-              options={["Tier 0 — Introductory","Tier 1 — Standard","Tier 2 — Premium","Tier 3 — Enterprise","Custom"]} />
-            <Field label="Confirmed Price" required {...f("pricing_confirmed_price")} placeholder="$18,500" />
-          </TwoCol>
-          <TwoCol>
-            <Field label="Deposit Amount" {...f("pricing_deposit")} placeholder="$5,000" />
-            <Field label="Payment Terms" {...f("pricing_payment_terms")}
-              options={["50% deposit / 50% at event","30% deposit / 70% at event","Net 30","Custom"]} />
-          </TwoCol>
-          <Field label="Pricing Notes" type="textarea" rows={2} {...f("pricing_notes")}
-            placeholder="Any concessions, add-ons, or adjustments to standard tier pricing…" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ProposalForm({ data, onChange, onGenerate, generating }) {
-  const f = (key) => ({ value: data[key] || "", onChange: (v) => onChange(key, v) });
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ padding: "12px 16px", borderRadius: 10, background: theme.successSoft, border: `1px solid rgba(88,176,108,0.3)` }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "#2d7a46", marginBottom: 4 }}>PROPOSAL GENERATION</div>
-        <div style={{ fontSize: 13, color: theme.text, marginBottom: 10 }}>
-          Generate a pre-filled proposal doc using all data collected in this pipeline record. Review before sending to PandaDoc.
-        </div>
-        <Button onClick={onGenerate} disabled={generating} size="sm">
-          {generating ? "Generating…" : "Generate Proposal Doc ↓"}
-        </Button>
-      </div>
-      {data.proposal_doc_url && (
-        <div style={{ padding: "10px 14px", borderRadius: 8, background: theme.offWhite, border: `1px solid ${theme.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 13, color: theme.text, fontWeight: 600 }}>Proposal doc ready</span>
-          <a href={data.proposal_doc_url} target="_blank" rel="noreferrer"
-            style={{ fontSize: 12, color: theme.primary, fontWeight: 700, textDecoration: "none" }}>Open ↗</a>
-        </div>
-      )}
-      <Field label="PandaDoc Link (once sent)" {...f("pandadoc_url")} placeholder="https://app.pandadoc.com/…" />
-      <TwoCol>
-        <Field label="Sent to Client?" {...f("proposal_sent_to_client")} options={["Yes","No"]} />
-        <Field label="Date Sent" type="date" {...f("proposal_sent_date")} />
-      </TwoCol>
-      <Field label="Notes" type="textarea" rows={2} {...f("proposal_notes")} />
     </div>
   );
 }
@@ -227,11 +155,11 @@ function ClosingForm({ data, onChange }) {
         options={["Accepted","Declined","Negotiating"]} />
       {data.closing_outcome === "Declined" && (
         <Field label="Decline Reason" type="textarea" rows={2} required {...f("closing_decline_reason")}
-          placeholder="Why did they pass? Budget, timing, went with competitor…" />
+          placeholder="Why did they pass?" />
       )}
       {data.closing_outcome === "Negotiating" && (
         <Field label="Negotiation Notes" type="textarea" rows={2} {...f("closing_negotiation_notes")}
-          placeholder="What are they pushing back on? What's the ask?" />
+          placeholder="What are they pushing back on?" />
       )}
       {data.closing_outcome === "Accepted" && (
         <>
@@ -248,11 +176,110 @@ function ClosingForm({ data, onChange }) {
   );
 }
 
+// ─── DOC SIGNING STATUS ───────────────────────────────────────────────────────
+// Reads mm_documents to check if MSA or SOW is fully signed for this pipeline record
+// DocSigningStatus — updated to gate on proposal + msa + sow all signed
+const REQUIRED_DOCS = [
+  { type: "proposal", label: "Proposal" },
+  { type: "msa",      label: "Master Service Agreement" },
+  { type: "sow",      label: "Statement of Work" },
+];
+
+function DocSigningStatus({ pipelineId, onStatusChange }) {
+  const [docMap,  setDocMap]  = useState({}); // docType → doc record
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!pipelineId) return;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const snap = await getDocs(
+          query(
+            collection(db, "mm_documents"),
+            where("pipelineId", "==", pipelineId),
+            where("docType", "in", ["proposal", "msa", "sow"])
+          )
+        );
+        // Most recent per type wins
+        const map = {};
+        snap.docs.forEach(d => {
+          const data = { id: d.id, ...d.data() };
+          if (!map[data.docType] || data.createdAt > map[data.docType].createdAt) {
+            map[data.docType] = data;
+          }
+        });
+        setDocMap(map);
+        const allSigned = REQUIRED_DOCS.every(r => map[r.type]?.bothSigned === true);
+        onStatusChange?.(allSigned);
+      } catch (e) {
+        console.error("DocSigningStatus load error:", e);
+      }
+      setLoading(false);
+    };
+    load();
+  }, [pipelineId]);
+
+  if (loading) return <div style={{ fontSize: 12, color: theme.textMuted }}>Checking document status…</div>;
+
+  const allSigned = REQUIRED_DOCS.every(r => docMap[r.type]?.bothSigned === true);
+
+  return (
+    <div style={{
+      padding: "14px 16px", borderRadius: 10, marginBottom: 16,
+      background: allSigned ? "rgba(88,176,108,0.08)" : "rgba(224,123,42,0.08)",
+      border: `1px solid ${allSigned ? "rgba(88,176,108,0.35)" : "rgba(224,123,42,0.35)"}`,
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: allSigned ? "#2d7a46" : "#E07B2A", marginBottom: 10 }}>
+        {allSigned ? "✓ All Documents Signed — Ready to Activate" : "All Three Documents Must Be Signed Before Activation"}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+        {REQUIRED_DOCS.map(({ type, label }) => {
+          const d = docMap[type];
+          const signed  = d?.bothSigned === true;
+          const pending = d && !signed && d.counterpartyEmbedSrc;
+          const noDoc   = !d;
+
+          return (
+            <div key={type} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{
+                width: 18, height: 18, borderRadius: "50%", flexShrink: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 10, fontWeight: 700,
+                background: signed ? "#2d7a46" : "rgba(0,0,0,0.08)",
+                color: signed ? "#fff" : theme.textMuted,
+              }}>
+                {signed ? "✓" : "–"}
+              </div>
+              <div style={{ flex: 1 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: signed ? "#2d7a46" : theme.text }}>{label}</span>
+                <span style={{ fontSize: 11, color: theme.textMuted, marginLeft: 8 }}>
+                  {signed
+                    ? `Signed ${d.signedAt?.toDate?.()?.toLocaleDateString?.() || ""}`
+                    : pending
+                      ? "Awaiting client signature"
+                      : noDoc
+                        ? "Not generated yet"
+                        : "Generated — not yet sent for signature"}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {!allSigned && (
+        <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 10 }}>
+          Generate missing documents in the Document Generator. Once sent to the client portal and signed by both parties, this gate will clear automatically.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── REJECTION MODAL ──────────────────────────────────────────────────────────
 function RejectionModal({ activeUser, onConfirm, onCancel, saving }) {
   const [reason, setReason] = useState("");
   const isFounder = FOUNDERS.includes(activeUser);
-
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999 }}>
       <div style={{ background: theme.surface, borderRadius: 14, padding: 28, width: 440, boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
@@ -268,15 +295,10 @@ function RejectionModal({ activeUser, onConfirm, onCancel, saving }) {
           <label style={{ fontSize: 11, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 6 }}>
             Reason <span style={{ color: theme.warning }}>*</span>
           </label>
-          <textarea
-            value={reason}
-            onChange={e => setReason(e.target.value)}
-            placeholder={isFounder
-              ? "Why are we declining? Budget mismatch, bad fit, capacity…"
-              : "Why should this be rejected? Ashley and Mikal will review this."}
+          <textarea value={reason} onChange={e => setReason(e.target.value)}
+            placeholder={isFounder ? "Why are we declining?" : "Why should this be rejected?"}
             rows={3}
-            style={{ width: "100%", padding: "9px 11px", borderRadius: 8, border: `1.5px solid ${theme.border}`, fontSize: 13, fontFamily: "'DM Sans', sans-serif", outline: "none", resize: "none", boxSizing: "border-box", color: theme.text, background: theme.offWhite }}
-          />
+            style={{ width: "100%", padding: "9px 11px", borderRadius: 8, border: `1.5px solid ${theme.border}`, fontSize: 13, fontFamily: "'DM Sans', sans-serif", outline: "none", resize: "none", boxSizing: "border-box", color: theme.text, background: theme.offWhite }} />
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <Button variant="outline" onClick={onCancel} disabled={saving}>Cancel</Button>
@@ -296,21 +318,16 @@ function StageProgress({ currentStage }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: 22 }}>
       {activeStages.map((s, i) => {
-        const done    = i < idx;
-        const current = i === idx;
-        const future  = i > idx;
+        const done = i < idx, current = i === idx;
         return (
           <div key={s.key} style={{ display: "flex", alignItems: "center", flex: i < activeStages.length - 1 ? 1 : "none" }}>
-            <div style={{
-              display: "flex", flexDirection: "column", alignItems: "center", gap: 4, minWidth: 64,
-            }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, minWidth: 64 }}>
               <div style={{
                 width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
                 fontSize: 11, fontWeight: 700,
                 background: done ? theme.secondary : current ? theme.primary : theme.border,
                 color: done || current ? "#fff" : theme.textMuted,
                 border: current ? `3px solid ${theme.primaryDark}` : "none",
-                transition: "all 0.2s ease",
               }}>
                 {done ? "✓" : i + 1}
               </div>
@@ -319,7 +336,7 @@ function StageProgress({ currentStage }) {
               </div>
             </div>
             {i < activeStages.length - 1 && (
-              <div style={{ flex: 1, height: 2, background: done ? theme.secondary : theme.border, marginBottom: 18, transition: "background 0.3s ease" }} />
+              <div style={{ flex: 1, height: 2, background: done ? theme.secondary : theme.border, marginBottom: 18 }} />
             )}
           </div>
         );
@@ -328,28 +345,26 @@ function StageProgress({ currentStage }) {
   );
 }
 
-// ─── MAIN COMPONENT ────────────────────────────────────────────────────────────
+// ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 export default function Pipeline() {
   const { activeUser } = useAuth();
   const navigate = useNavigate();
-
   const [searchParams] = useSearchParams();
-  const justPriced = searchParams.get("priced") === "1";
+  const justPriced  = searchParams.get("priced") === "1";
   const highlightId = searchParams.get("highlight");
 
-  const [items,       setItems]       = useState([]);
-  const [selected,    setSelected]    = useState(null);
-  const [formData,    setFormData]    = useState({});
-  const [loading,     setLoading]     = useState(true);
-  const [saving,      setSaving]      = useState(false);
-  const [generating,  setGenerating]  = useState(false);
-  const [matrixViewed, setMatrixViewed] = useState(false);
-  const [filter,      setFilter]      = useState("active");
-  const [dirty,       setDirty]       = useState(false);
-  const [showReject,  setShowReject]  = useState(false);
-  const [toast,       setToast]       = useState(null);
+  const [items,        setItems]        = useState([]);
+  const [selected,     setSelected]     = useState(null);
+  const [formData,     setFormData]     = useState({});
+  const [loading,      setLoading]      = useState(true);
+  const [saving,       setSaving]       = useState(false);
+  const [filter,       setFilter]       = useState("active");
+  const [dirty,        setDirty]        = useState(false);
+  const [showReject,   setShowReject]   = useState(false);
+  const [toast,        setToast]        = useState(null);
+  const [docsSigned,   setDocsSigned]   = useState(false); // from DocSigningStatus
 
-  // ── Client Portal state ───────────────────────────────────────────────────
+  // Portal / invoice state
   const [invoices,      setInvoices]      = useState([]);
   const [newInvoice,    setNewInvoice]    = useState({ label: "", amount: "", due_date: "", status: "draft" });
   const [addingInvoice, setAddingInvoice] = useState(false);
@@ -362,13 +377,13 @@ export default function Pipeline() {
   const [sendingInvite, setSendingInvite] = useState(false);
 
   useEffect(() => { load(); }, []);
-  
+
   useEffect(() => {
-     if (highlightId && items.length > 0) {
-       const match = items.find(i => i.id === highlightId);
+    if (highlightId && items.length > 0) {
+      const match = items.find(i => i.id === highlightId);
       if (match) handleSelect(match);
-     }
-   }, [highlightId, items]);
+    }
+  }, [highlightId, items]);
 
   const load = async () => {
     setLoading(true);
@@ -379,15 +394,14 @@ export default function Pipeline() {
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
+    setTimeout(() => setToast(null), 3500);
   };
 
   const handleSelect = (item) => {
     setSelected(item);
     setFormData(item.stage_data || {});
-    setMatrixViewed(false);
     setDirty(false);
-    // Load portal data
+    setDocsSigned(false);
     setBranding(item.branding || { logo_url: "", primary_hex: "", secondary_hex: "" });
     setBrandingDraft(item.branding || { logo_url: "", primary_hex: "", secondary_hex: "" });
     setInviteSent(!!item.portal_invite_sent);
@@ -399,13 +413,121 @@ export default function Pipeline() {
     setInvoices(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "")));
   };
 
+  const updateField = (key, value) => {
+    setFormData(prev => ({ ...prev, [key]: value }));
+    setDirty(true);
+  };
+
+  const save = async (extraFields = {}) => {
+    if (!selected) return;
+    setSaving(true);
+    await updateDoc(doc(db, "pipeline", selected.id), {
+      stage_data:      { ...formData },
+      last_updated_by: activeUser,
+      last_updated_at: serverTimestamp(),
+      ...extraFields,
+    });
+    await load();
+    setDirty(false);
+    setSaving(false);
+  };
+
+  const advanceStage = async (nextStage) => {
+    await save({ stage: nextStage });
+    setSelected(prev => ({ ...prev, stage: nextStage }));
+    showToast(`Moved to ${STAGES.find(s => s.key === nextStage)?.label}`);
+  };
+
+  const claimLead = async () => {
+    await save({ claimed_by: activeUser, claimed_at: serverTimestamp(), stage: "awaiting_qualification" });
+    setSelected(prev => ({ ...prev, stage: "awaiting_qualification", claimed_by: activeUser }));
+    showToast("Lead claimed — qualification form unlocked");
+  };
+
+  const handleReject = async (reason, isFounder) => {
+    setSaving(true);
+    if (isFounder) {
+      await updateDoc(doc(db, "pipeline", selected.id), {
+        stage: "declined", rejection_reason: reason,
+        rejected_by: activeUser, rejected_at: serverTimestamp(),
+        stage_data: { ...formData },
+      });
+      setSelected(prev => ({ ...prev, stage: "declined" }));
+      showToast("Lead declined");
+    } else {
+      await updateDoc(doc(db, "pipeline", selected.id), {
+        rejection_requested: true,
+        rejection_request_reason: reason,
+        rejection_requested_by: activeUser,
+        rejection_requested_at: serverTimestamp(),
+      });
+      showToast("Rejection request sent to Ashley or Mikal", "warning");
+    }
+    await load();
+    setShowReject(false);
+    setSaving(false);
+  };
+
+  // ── Portal invite via Cloud Function ────────────────────────────────────────
+  const sendPortalInvite = async () => {
+    if (!selected) return;
+    const email = selected.contact_email || selected.email;
+    if (!email) { showToast("No contact email on record", "error"); return; }
+
+    setSendingInvite(true);
+    try {
+      await sendMMPortalInviteFn({ pipelineId: selected.id });
+      setInviteSent(true);
+      setSelected(prev => ({ ...prev, portal_invite_sent: true }));
+      showToast(`Portal invite sent to ${email}`);
+    } catch (err) {
+      console.error("sendMMPortalInvite error:", err);
+      showToast(`Invite failed: ${err.message}`, "error");
+    }
+    setSendingInvite(false);
+  };
+
+  // ── Send to Activation Queue ─────────────────────────────────────────────────
+  const sendToActivationQueue = async () => {
+    setSaving(true);
+    const item = { ...selected, stage_data: formData };
+    const ref = await addDoc(collection(db, "event_intake_requests"), {
+      event_name:      item.event_name || `${item.org_name || item.organization || ""} — ${formData.qual_event_type || "Event"}`,
+      client:          item.org_name || item.organization || item.client || "",
+      event_date:      formData.disc_confirmed_date || formData.qual_est_date || "",
+      venue:           formData.disc_venue || "",
+      location:        formData.disc_location || "",
+      attendee_count:  formData.disc_attendance || "",
+      pillar:          formData.disc_pillar || formData.qual_pillar_hypothesis || "",
+      budget:          formData.disc_budget || "",
+      contact_name:    item.contact_name || item.contactName || "",
+      contact_email:   item.contact_email || item.email || "",
+      confirmed_price: formData.pricing_confirmed_price || "",
+      deposit:         formData.pricing_deposit || "",
+      payment_terms:   formData.pricing_payment_terms || "",
+      status:          "new",
+      pipeline_id:     selected.id,
+      created_at:      serverTimestamp(),
+    });
+    await updateDoc(doc(db, "pipeline", selected.id), {
+      stage: "active",
+      activation_queue_id:   ref.id,
+      sent_to_activation_by: activeUser,
+      sent_to_activation_at: serverTimestamp(),
+      stage_data: { ...formData },
+    });
+    await load();
+    setSelected(prev => ({ ...prev, stage: "active" }));
+    setSaving(false);
+    showToast("Sent to Activation Queue ✓");
+  };
+
+  // Invoice helpers (unchanged)
   const addInvoice = async () => {
     if (!newInvoice.label.trim() || !newInvoice.amount) return;
     setSavingInvoice(true);
     await addDoc(collection(db, "pipeline", selected.id, "invoices"), {
-      ...newInvoice,
-      amount: parseFloat(newInvoice.amount),
-      created_at: new Date().toISOString(),
+      ...newInvoice, amount: parseFloat(newInvoice.amount), created_at: new Date().toISOString(),
     });
     await loadInvoices(selected.id);
     setNewInvoice({ label: "", amount: "", due_date: "", status: "draft" });
@@ -432,182 +554,18 @@ export default function Pipeline() {
     setSavingBrand(false);
   };
 
-  const sendPortalInvite = async () => {
-    if (!selected.contact_email && !selected.email) return;
-    const email = selected.contact_email || selected.email;
-    setSendingInvite(true);
-    await updateDoc(doc(db, "pipeline", selected.id), {
-      portal_invite_sent:   true,
-      portal_invite_date:   new Date().toISOString(),
-      portal_client_id:     selected.id,
-      portal_client_email:  email,  // used by client portal auth hook to scope the record
-    });
-    setInviteSent(true);
-    setSelected(prev => ({ ...prev, portal_invite_sent: true }));
-    setSendingInvite(false);
-    showToast("Invite flagged — send login link to client");
-  };
-
-
-
-  const updateField = (key, value) => {
-    setFormData(prev => ({ ...prev, [key]: value }));
-    setDirty(true);
-  };
-
-  const save = async (extraFields = {}) => {
-    if (!selected) return;
-    setSaving(true);
-    const update = {
-      stage_data: { ...formData },
-      last_updated_by: activeUser,
-      last_updated_at: serverTimestamp(),
-      ...extraFields,
-    };
-    await updateDoc(doc(db, "pipeline", selected.id), update);
-    await load();
-    setDirty(false);
-    setSaving(false);
-  };
-
-  const advanceStage = async (nextStage) => {
-    await save({ stage: nextStage });
-    setSelected(prev => ({ ...prev, stage: nextStage }));
-    showToast(`Moved to ${STAGES.find(s => s.key === nextStage)?.label}`);
-  };
-
-  const claimLead = async () => {
-    await save({ claimed_by: activeUser, claimed_at: serverTimestamp(), stage: "awaiting_qualification" });
-    setSelected(prev => ({ ...prev, stage: "awaiting_qualification", claimed_by: activeUser }));
-    showToast("Lead claimed — qualification form unlocked");
-  };
-
-  const handleReject = async (reason, isFounder) => {
-    setSaving(true);
-    if (isFounder) {
-      await updateDoc(doc(db, "pipeline", selected.id), {
-        stage: "declined",
-        rejection_reason: reason,
-        rejected_by: activeUser,
-        rejected_at: serverTimestamp(),
-        stage_data: { ...formData },
-      });
-      setSelected(prev => ({ ...prev, stage: "declined" }));
-      showToast("Lead declined");
-    } else {
-      await updateDoc(doc(db, "pipeline", selected.id), {
-        rejection_requested: true,
-        rejection_request_reason: reason,
-        rejection_requested_by: activeUser,
-        rejection_requested_at: serverTimestamp(),
-      });
-      showToast("Rejection request sent to Ashley or Mikal", "warning");
-    }
-    await load();
-    setShowReject(false);
-    setSaving(false);
-  };
-
-  const sendToActivationQueue = async () => {
-    setSaving(true);
-    const item = { ...selected, stage_data: formData };
-    // Write to event_intake_requests
-    const ref = await addDoc(collection(db, "event_intake_requests"), {
-      // Core event fields from pipeline
-      event_name:      formData.disc_venue
-        ? `${item.org_name || item.organization || item.client || ""} — ${formData.qual_event_type || "Event"}`
-        : (item.event_name || `${item.org_name || item.organization || ""} — ${formData.qual_event_type || "Event"}`),
-      client:          item.org_name || item.organization || item.client || "",
-      event_date:      formData.disc_confirmed_date || formData.qual_est_date || "",
-      venue:           formData.disc_venue || "",
-      location:        formData.disc_location || "",
-      attendee_count:  formData.disc_attendance || "",
-      pillar:          formData.disc_pillar || formData.qual_pillar_hypothesis || "",
-      budget:          formData.disc_budget || "",
-      contact_name:    item.contact_name || item.contactName || "",
-      contact_email:   item.contact_email || item.email || "",
-      // Pricing
-      confirmed_price: formData.pricing_confirmed_price || "",
-      deposit:         formData.pricing_deposit || "",
-      payment_terms:   formData.pricing_payment_terms || "",
-      // Proposal
-      pandadoc_url:    formData.pandadoc_url || "",
-      proposal_doc_url: formData.proposal_doc_url || "",
-      // Status
-      status:          "new",
-      pipeline_id:     selected.id,
-      created_at:      serverTimestamp(),
-    });
-    // Mark pipeline record as sent to activation
-    await updateDoc(doc(db, "pipeline", selected.id), {
-      stage: "active",
-      activation_queue_id: ref.id,
-      sent_to_activation_by: activeUser,
-      sent_to_activation_at: serverTimestamp(),
-      stage_data: { ...formData },
-    });
-    await load();
-    setSelected(prev => ({ ...prev, stage: "active" }));
-    setSaving(false);
-    showToast("Sent to Activation Queue ✓");
-  };
-
-  const generateProposal = async () => {
-    setGenerating(true);
-    // Build proposal data summary for download
-    const item = selected;
-    const d = formData;
-    const proposalText = [
-      `PROPOSAL — ${item.event_name || item.org_name || "Event"}`,
-      `Prepared by M&M Operations`,
-      ``,
-      `CLIENT: ${item.org_name || item.client || ""}`,
-      `EVENT DATE: ${d.disc_confirmed_date || d.qual_est_date || "TBD"}`,
-      `VENUE: ${d.disc_venue || "TBD"}`,
-      `LOCATION: ${d.disc_location || "TBD"}`,
-      `ATTENDANCE: ${d.disc_attendance || "TBD"}`,
-      `PILLAR: ${d.disc_pillar || d.qual_pillar_hypothesis || "TBD"}`,
-      ``,
-      `SCOPE`,
-      `${d.disc_scope_notes || ""}`,
-      ``,
-      `INVESTMENT`,
-      `Tier: ${d.pricing_tier || ""}`,
-      `Total: ${d.pricing_confirmed_price || ""}`,
-      `Deposit: ${d.pricing_deposit || ""}`,
-      `Payment Terms: ${d.pricing_payment_terms || ""}`,
-      ``,
-      `NOTES`,
-      `${d.pricing_notes || ""}`,
-    ].join("\n");
-
-    // Create downloadable txt (placeholder until Google Docs API is wired)
-    const blob = new Blob([proposalText], { type: "text/plain" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
-    a.href = url;
-    a.download = `Proposal_${(item.org_name || "Client").replace(/\s+/g, "_")}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-
-    // Store a placeholder url
-    updateField("proposal_doc_url", "#generated");
-    setGenerating(false);
-    showToast("Proposal downloaded — upload to Drive and add the link below");
-  };
-
   // ── FILTERED LIST ──────────────────────────────────────────────────────────
   const filtered = (() => {
-    if (filter === "active") return items.filter(i => !["declined","active","complete"].includes(i.stage));
+    if (filter === "active")          return items.filter(i => !["declined","active","complete"].includes(i.stage));
     if (filter === "active_delivery") return items.filter(i => i.stage === "active");
-    if (filter === "declined") return items.filter(i => i.stage === "declined");
+    if (filter === "declined")        return items.filter(i => i.stage === "declined");
     return items;
   })();
 
   // ── STAGE ACTIONS ──────────────────────────────────────────────────────────
   const renderStageAction = () => {
     if (!selected) return null;
-    const stage = selected.stage || "intake_received";
+    const stage     = selected.stage || "intake_received";
     const isFounder = FOUNDERS.includes(activeUser);
 
     const rejectBtn = (
@@ -616,29 +574,27 @@ export default function Pipeline() {
       </Button>
     );
 
-    switch (stage) {
+    const saveBtn = (
+      <Button variant="outline" size="sm" onClick={() => save()} disabled={saving || !dirty}>
+        {saving ? "Saving…" : "Save"}
+      </Button>
+    );
 
+    switch (stage) {
       case "intake_received":
         return (
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
             {rejectBtn}
-            <Button onClick={claimLead} disabled={saving}>
-              Claim Lead → Start Qualification
-            </Button>
+            <Button onClick={claimLead} disabled={saving}>Claim Lead → Start Qualification</Button>
           </div>
         );
 
       case "awaiting_qualification":
         return (
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
-            {rejectBtn}
-            <Button variant="outline" size="sm" onClick={() => save()} disabled={saving || !dirty}>
-              {saving ? "Saving…" : "Save"}
-            </Button>
-            <Button
-              onClick={() => advanceStage("approved_for_discovery")}
-              disabled={saving || !formData.qual_pillar_hypothesis || !formData.qual_pain_point}
-            >
+            {rejectBtn}{saveBtn}
+            <Button onClick={() => advanceStage("approved_for_discovery")}
+              disabled={saving || !formData.qual_pillar_hypothesis || !formData.qual_pain_point}>
               Submit Qual → Approve for Discovery
             </Button>
           </div>
@@ -647,14 +603,9 @@ export default function Pipeline() {
       case "approved_for_discovery":
         return (
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
-            {rejectBtn}
-            <Button variant="outline" size="sm" onClick={() => save()} disabled={saving || !dirty}>
-              {saving ? "Saving…" : "Save"}
-            </Button>
-            <Button
-              onClick={() => advanceStage("discovery_complete")}
-              disabled={saving || !formData.disc_confirmed_date || !formData.disc_budget || !formData.disc_pillar || !formData.disc_scope_notes}
-            >
+            {rejectBtn}{saveBtn}
+            <Button onClick={() => advanceStage("discovery_complete")}
+              disabled={saving || !formData.disc_confirmed_date || !formData.disc_budget || !formData.disc_pillar || !formData.disc_scope_notes}>
               Submit Discovery → Complete
             </Button>
           </div>
@@ -663,84 +614,85 @@ export default function Pipeline() {
       case "discovery_complete":
         return (
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
-            {rejectBtn}
-            <Button variant="outline" size="sm" onClick={() => save()} disabled={saving || !dirty}>
-              {saving ? "Saving…" : "Save"}
-            </Button>
-            <Button
-              onClick={() => advanceStage("pricing_approved")}
-              disabled={saving || !formData.pricing_tier || !formData.pricing_confirmed_price}
-            >
+            {rejectBtn}{saveBtn}
+            <Button onClick={() => advanceStage("pricing_approved")}
+              disabled={saving || !formData.pricing_tier || !formData.pricing_confirmed_price}>
               Confirm Pricing → Approve
             </Button>
           </div>
         );
 
-      case "pricing_approved":
+      // ── PROPOSAL STAGE — refactored ─────────────────────────────────────
+      case "pricing_approved": {
+        const hasProposal   = !!selected.proposal_doc_id;
+        const hasInvite     = !!selected.portal_invite_sent;
+        const canAdvance    = hasProposal && hasInvite;
+
         return (
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
-            {rejectBtn}
-            <Button variant="outline" size="sm" onClick={() => save()} disabled={saving || !dirty}>
-              {saving ? "Saving…" : "Save"}
-            </Button>
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20, flexWrap: "wrap" }}>
+            {rejectBtn}{saveBtn}
             <Button
               onClick={() => advanceStage("proposal_sent")}
-              disabled={saving || !formData.proposal_sent_to_client}
+              disabled={saving || !canAdvance}
+              title={!hasProposal ? "Generate proposal first" : !hasInvite ? "Send portal invite first" : ""}
             >
-              Mark Proposal Sent →
+              Advance to Closing →
             </Button>
           </div>
         );
+      }
 
-      case "proposal_sent":
-        if (formData.closing_outcome === "Accepted" && formData.closing_deposit_received === "Yes") {
-          return (
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20, alignItems: "center" }}>
-              {rejectBtn}
-              <Button variant="outline" size="sm" onClick={() => save()} disabled={saving || !dirty}>
-                {saving ? "Saving…" : "Save"}
-              </Button>
-              <Button onClick={sendToActivationQueue} disabled={saving}
-                style={{ background: theme.accent, color: theme.primaryDark }}>
-                Send to Activation Queue ✓
-              </Button>
-            </div>
-          );
-        }
+      // ── CLOSING STAGE ───────────────────────────────────────────────────
+      case "proposal_sent": {
         if (formData.closing_outcome === "Declined") {
           return (
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
-              <Button variant="outline" size="sm" onClick={() => save()} disabled={saving || !dirty}>
-                {saving ? "Saving…" : "Save"}
-              </Button>
+              {saveBtn}
               <Button variant="danger" onClick={() => advanceStage("declined")} disabled={saving}>
                 Mark as Declined
               </Button>
             </div>
           );
         }
+        if (formData.closing_outcome === "Accepted" && formData.closing_deposit_received === "Yes") {
+          return (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 20 }}>
+              {/* Doc signing status — gates activation */}
+              <DocSigningStatus
+                pipelineId={selected.id}
+                onStatusChange={setDocsSigned}
+              />
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                {rejectBtn}{saveBtn}
+                <Button
+                  onClick={sendToActivationQueue}
+                  disabled={saving || !docsSigned}
+                  style={docsSigned ? { background: theme.accent, color: theme.primaryDark } : {}}
+                  title={!docsSigned ? "MSA or SOW must be signed before activating" : ""}
+                >
+                  {docsSigned ? "Send to Activation Queue ✓" : "Awaiting Signed MSA / SOW…"}
+                </Button>
+              </div>
+            </div>
+          );
+        }
         return (
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
-            {rejectBtn}
-            <Button variant="outline" size="sm" onClick={() => save()} disabled={saving || !dirty}>
-              {saving ? "Saving…" : "Save"}
-            </Button>
+            {rejectBtn}{saveBtn}
           </div>
         );
+      }
 
       case "active":
         return (
           <div style={{ padding: "16px", borderRadius: 10, background: theme.successSoft, border: `1px solid rgba(88,176,108,0.3)`, marginTop: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#2d7a46", marginBottom: 6 }}>In Activation Queue</div>
             <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 10 }}>This record has been sent to the Activation Queue. Continue managing from there.</div>
-            <Button size="sm" onClick={() => navigate("/activation-setup")}>
-              Go to Activation Queue →
-            </Button>
+            <Button size="sm" onClick={() => navigate("/activation-setup")}>Go to Activation Queue →</Button>
           </div>
         );
 
-      default:
-        return null;
+      default: return null;
     }
   };
 
@@ -760,76 +712,125 @@ export default function Pipeline() {
       return (
         <div style={{ padding: "14px 16px", borderRadius: 10, background: theme.warningSoft, border: `1px solid rgba(224,123,42,0.3)` }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: theme.warning, marginBottom: 4 }}>Unclaimed</div>
-          <div style={{ fontSize: 13, color: theme.text }}>
-            Claim this lead to begin qualification. Only one person should own each lead through the pipeline.
+          <div style={{ fontSize: 13, color: theme.text }}>Claim this lead to begin qualification.</div>
+          {selected.claimed_by && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 8 }}>Claimed by {selected.claimed_by}</div>}
+        </div>
+      );
+    }
+    if (stage === "awaiting_qualification") return <>{sectionTitle("Qualification", "Complete after discovery call. Required before advancing.")}<QualForm data={formData} onChange={updateField} /></>;
+    if (stage === "approved_for_discovery") return <>{sectionTitle("Discovery", "Lock down specifics before pricing.")}<DiscoveryForm data={formData} onChange={updateField} /></>;
+
+    if (stage === "discovery_complete") {
+      return <>
+        {sectionTitle("Pricing", "Run the Pricing Engine, then confirm the output below.")}
+        {justPriced && (
+          <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 16, background: "rgba(100,200,100,0.08)", border: "1px solid rgba(100,200,100,0.3)", fontSize: 12, fontWeight: 600, color: "#2d7a46" }}>
+            ✓ Engine run complete — review and confirm the numbers below.
           </div>
-          {selected.claimed_by && (
-            <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 8 }}>Claimed by {selected.claimed_by}</div>
+        )}
+        <PipelinePricingPanel pipelineId={selected?.id} data={formData} onChange={updateField} />
+      </>;
+    }
+
+    // ── PROPOSAL STAGE — refactored, no PandaDoc ──────────────────────────
+    if (stage === "pricing_approved") {
+      const hasProposal = !!selected.proposal_doc_id;
+      const hasInvite   = !!selected.portal_invite_sent;
+      const email       = selected.contact_email || selected.email;
+
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {sectionTitle("Proposal & Portal Invite", "Generate the proposal, invite the client to the portal, then advance to closing.")}
+
+          {/* Step 1 — Generate Proposal */}
+          <div style={{
+            padding: "16px", borderRadius: 10,
+            background: hasProposal ? "rgba(88,176,108,0.08)" : theme.offWhite,
+            border: `1px solid ${hasProposal ? "rgba(88,176,108,0.35)" : theme.border}`,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: hasProposal ? 0 : 8 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: hasProposal ? "#2d7a46" : theme.text }}>
+                  {hasProposal ? "✓ Proposal Generated" : "Step 1 — Generate Proposal"}
+                </div>
+                {!hasProposal && (
+                  <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 3 }}>
+                    Opens the Document Generator with this pipeline record pre-loaded.
+                  </div>
+                )}
+              </div>
+              <Button
+                size="sm"
+                variant={hasProposal ? "outline" : "primary"}
+                onClick={() => navigate(`/document-generator?pipelineId=${selected.id}&docType=proposal`)}
+              >
+                {hasProposal ? "View / Regenerate ↗" : "Go to Document Generator →"}
+              </Button>
+            </div>
+            {hasProposal && selected.proposal_doc_url && (
+              <a href={selected.proposal_doc_url} target="_blank" rel="noreferrer"
+                style={{ fontSize: 12, color: theme.primary, fontWeight: 600, textDecoration: "none" }}>
+                Open proposal ↗
+              </a>
+            )}
+          </div>
+
+          {/* Step 2 — Portal Invite */}
+          <div style={{
+            padding: "16px", borderRadius: 10,
+            background: hasInvite ? "rgba(88,176,108,0.08)" : hasProposal ? theme.offWhite : "rgba(0,0,0,0.03)",
+            border: `1px solid ${hasInvite ? "rgba(88,176,108,0.35)" : theme.border}`,
+            opacity: hasProposal ? 1 : 0.5,
+            pointerEvents: hasProposal ? "auto" : "none",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: hasInvite ? "#2d7a46" : theme.text }}>
+                  {hasInvite ? "✓ Portal Invite Sent" : "Step 2 — Send Portal Invite"}
+                </div>
+                <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 3 }}>
+                  {hasInvite
+                    ? `Invited ${email} on ${selected.portal_invite_date ? new Date(selected.portal_invite_date).toLocaleDateString() : "record"}.`
+                    : email
+                      ? `Will send to ${email}`
+                      : "No contact email on record — add one to the lead before inviting."}
+                </div>
+              </div>
+              {!hasInvite && (
+                <Button
+                  size="sm"
+                  onClick={sendPortalInvite}
+                  disabled={sendingInvite || !email}
+                >
+                  {sendingInvite ? "Sending…" : "Send Invite →"}
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Gate status */}
+          {(!hasProposal || !hasInvite) && (
+            <div style={{ fontSize: 12, color: theme.textMuted, padding: "8px 12px", borderRadius: 8, background: "rgba(224,123,42,0.06)", border: "1px solid rgba(224,123,42,0.2)" }}>
+              {!hasProposal
+                ? "Generate the proposal first, then send the portal invite to unlock closing."
+                : "Send the portal invite to unlock closing."}
+            </div>
           )}
         </div>
       );
     }
 
-    if (stage === "awaiting_qualification") {
-      return <>
-        {sectionTitle("Qualification", "Complete this after the discovery call. Required before advancing.")}
-        <QualForm data={formData} onChange={updateField} />
-      </>;
-    }
-
-    if (stage === "approved_for_discovery") {
-      return <>
-        {sectionTitle("Discovery", "Deeper dive. Lock down the specifics before pricing.")}
-        <DiscoveryForm data={formData} onChange={updateField} />
-      </>;
-    }
-
-    if (stage === "discovery_complete") {
-     return <>
-       {sectionTitle("Pricing", "Run the Pricing Engine, then confirm the output below.")}
-       {justPriced && (
-         <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 16,
-           background: "rgba(100,200,100,0.08)", border: "1px solid rgba(100,200,100,0.3)",
-           fontSize: 12, fontWeight: 600, color: "#2d7a46" }}>
-           ✓ Engine run complete — review and confirm the numbers below.
-         </div>
-       )}
-       <PipelinePricingPanel
-         pipelineId={selected?.id}
-         data={formData}
-         onChange={updateField}
-       />
-     </>;
-   }
-
-    if (stage === "pricing_approved") {
-      return <>
-        {sectionTitle("Proposal", "Generate the proposal, send via PandaDoc, then mark as sent.")}
-        <ProposalForm data={formData} onChange={updateField} onGenerate={generateProposal} generating={generating} />
-      </>;
-    }
-
-    if (stage === "proposal_sent") {
-      return <>
-        {sectionTitle("Closing", "Track the outcome. Once signed and deposit collected, send to Activation Queue.")}
-        <ClosingForm data={formData} onChange={updateField} />
-      </>;
-    }
+    if (stage === "proposal_sent") return <>{sectionTitle("Closing", "Track the outcome. Activation requires deposit received and signed MSA/SOW.")}<ClosingForm data={formData} onChange={updateField} /></>;
 
     if (stage === "declined") {
       return (
         <div style={{ padding: "14px 16px", borderRadius: 10, background: theme.dangerSoft, border: `1px solid rgba(192,57,43,0.2)` }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: theme.danger, marginBottom: 4 }}>Declined</div>
-          {selected.rejection_reason && (
-            <div style={{ fontSize: 13, color: theme.text }}>{selected.rejection_reason}</div>
-          )}
-          {selected.rejected_by && (
-            <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>By {selected.rejected_by}</div>
-          )}
+          {selected.rejection_reason && <div style={{ fontSize: 13, color: theme.text }}>{selected.rejection_reason}</div>}
+          {selected.rejected_by && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>By {selected.rejected_by}</div>}
         </div>
       );
     }
-
     return null;
   };
 
@@ -837,16 +838,14 @@ export default function Pipeline() {
   const renderLeadInfo = () => {
     if (!selected) return null;
     const fields = [
-      ["Org / Client",    selected.org_name || selected.organization || selected.client],
-      ["Contact",         selected.contact_name || selected.contactName],
-      ["Email",           selected.contact_email || selected.email],
-      ["Event Type",      selected.event_type || selected.eventType || formData.qual_event_type],
-      ["Claimed By",      selected.claimed_by],
-      ["Submitted",       selected.created_at?.toDate?.()?.toLocaleDateString?.() || selected.createdAt?.toDate?.()?.toLocaleDateString?.()],
+      ["Org / Client",  selected.org_name || selected.organization || selected.client],
+      ["Contact",       selected.contact_name || selected.contactName],
+      ["Email",         selected.contact_email || selected.email],
+      ["Event Type",    selected.event_type || selected.eventType || formData.qual_event_type],
+      ["Claimed By",    selected.claimed_by],
+      ["Submitted",     selected.created_at?.toDate?.()?.toLocaleDateString?.() || selected.createdAt?.toDate?.()?.toLocaleDateString?.()],
     ].filter(([, v]) => v);
-
     if (!fields.length) return null;
-
     return (
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, padding: "14px 0", borderBottom: `1px solid ${theme.border}`, marginBottom: 20 }}>
         {fields.map(([label, val]) => (
@@ -868,24 +867,16 @@ export default function Pipeline() {
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden", fontFamily: "'DM Sans', sans-serif" }}>
-      <style>{"@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;700&family=DM+Sans:opsz,wght@9..40,400;9..40,600;9..40,700&display=swap'); @keyframes spin { to { transform: rotate(360deg); } }"}</style>
+      <style>{"@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;700&family=DM+Sans:opsz,wght@9..40,400;9..40,600;9..40,700&display=swap');"}</style>
 
       {/* Toast */}
       {toast && (
-        <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, padding: "12px 18px", borderRadius: 10, background: toast.type === "success" ? theme.primary : toast.type === "warning" ? theme.warning : theme.danger, color: "#fff", fontSize: 13, fontWeight: 600, boxShadow: "0 8px 24px rgba(0,0,0,0.2)", transition: "all 0.2s ease" }}>
+        <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, padding: "12px 18px", borderRadius: 10, background: toast.type === "success" ? theme.primary : toast.type === "warning" ? theme.warning : theme.danger, color: "#fff", fontSize: 13, fontWeight: 600, boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
           {toast.msg}
         </div>
       )}
 
-      {/* Reject modal */}
-      {showReject && (
-        <RejectionModal
-          activeUser={activeUser}
-          onConfirm={handleReject}
-          onCancel={() => setShowReject(false)}
-          saving={saving}
-        />
-      )}
+      {showReject && <RejectionModal activeUser={activeUser} onConfirm={handleReject} onCancel={() => setShowReject(false)} saving={saving} />}
 
       {/* List panel */}
       <div style={{ width: 290, borderRight: `1px solid ${theme.border}`, display: "flex", flexDirection: "column", background: theme.surface, flexShrink: 0 }}>
@@ -893,10 +884,10 @@ export default function Pipeline() {
           <h2 style={{ margin: "0 0 12px", fontSize: 19, fontWeight: 700, color: theme.primary, fontFamily: "'Playfair Display', serif" }}>Pipeline</h2>
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
             {[
-              { key: "active", label: "In Progress" },
+              { key: "active",          label: "In Progress" },
               { key: "active_delivery", label: "Active" },
-              { key: "declined", label: "Declined" },
-              { key: "all", label: "All" },
+              { key: "declined",        label: "Declined" },
+              { key: "all",             label: "All" },
             ].map(f => (
               <button key={f.key} onClick={() => setFilter(f.key)}
                 style={{ padding: "3px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700, cursor: "pointer", background: filter === f.key ? theme.primary : "transparent", color: filter === f.key ? theme.onPrimary : theme.textMuted, border: `1px solid ${filter === f.key ? theme.primary : theme.border}`, fontFamily: "'DM Sans', sans-serif" }}>
@@ -921,9 +912,7 @@ export default function Pipeline() {
                     <Badge bg={sc.bg} color={sc.color}>{STAGES.find(s => s.key === item.stage)?.short || item.stage}</Badge>
                   </div>
                   <div style={{ fontSize: 11, color: theme.textMuted }}>{item.contact_name || item.contactName || "—"}</div>
-                  {hasRejReq && (
-                    <div style={{ fontSize: 10, color: theme.danger, fontWeight: 700, marginTop: 3 }}>⚠ Rejection requested</div>
-                  )}
+                  {hasRejReq && <div style={{ fontSize: 10, color: theme.danger, fontWeight: 700, marginTop: 3 }}>⚠ Rejection requested</div>}
                 </div>
               );
             })
@@ -950,44 +939,33 @@ export default function Pipeline() {
                   {selected.contact_name || selected.contactName || "No contact"} · {STAGES.find(s => s.key === selected.stage)?.label || "Unknown Stage"}
                 </div>
               </div>
-              <LifecyclePill status={selected.stage} />
             </div>
 
             {/* Rejection request flag */}
             {selected.rejection_requested && selected.stage !== "declined" && FOUNDERS.includes(activeUser) && (
               <div style={{ padding: "12px 16px", borderRadius: 10, background: theme.dangerSoft, border: `1px solid rgba(192,57,43,0.3)`, marginBottom: 16 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: theme.danger, marginBottom: 4 }}>
-                  ⚠ {selected.rejection_requested_by} requested rejection
-                </div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: theme.danger, marginBottom: 4 }}>⚠ {selected.rejection_requested_by} requested rejection</div>
                 <div style={{ fontSize: 13, color: theme.text, marginBottom: 10 }}>{selected.rejection_request_reason}</div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <Button variant="danger" size="sm" onClick={() => handleReject(selected.rejection_request_reason, true)} disabled={saving}>
-                    Approve Rejection
-                  </Button>
+                  <Button variant="danger" size="sm" onClick={() => handleReject(selected.rejection_request_reason, true)} disabled={saving}>Approve Rejection</Button>
                   <Button variant="outline" size="sm" onClick={async () => {
                     await updateDoc(doc(db, "pipeline", selected.id), { rejection_requested: false });
                     await load();
                     setSelected(prev => ({ ...prev, rejection_requested: false }));
-                  }} disabled={saving}>
-                    Dismiss
-                  </Button>
+                  }} disabled={saving}>Dismiss</Button>
                 </div>
               </div>
             )}
 
-            {/* Stage progress */}
             {selected.stage !== "declined" && <StageProgress currentStage={selected.stage || "intake_received"} />}
-
-            {/* Lead info */}
             {renderLeadInfo()}
 
-            {/* Stage form */}
             <Card style={{ marginBottom: 4 }}>
               {renderStageForm()}
               {renderStageAction()}
             </Card>
 
-            {/* ── Client Portal ─────────────────────────────────────────── */}
+            {/* ── Client Portal section ──────────────────────────────────── */}
             <div style={{ marginTop: 24 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Client Portal</div>
 
@@ -1006,27 +984,19 @@ export default function Pipeline() {
                 {editBranding ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     <input value={brandingDraft.logo_url || ""} onChange={e => setBrandingDraft(p => ({ ...p, logo_url: e.target.value }))}
-                      placeholder="Logo URL (Drive or hosted link)"
-                      style={{ padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
+                      placeholder="Logo URL" style={{ padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
                     <div style={{ display: "flex", gap: 8 }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 10, color: theme.textMuted, marginBottom: 3 }}>Primary Hex</div>
-                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <input type="color" value={brandingDraft.primary_hex || "#000000"} onChange={e => setBrandingDraft(p => ({ ...p, primary_hex: e.target.value }))}
-                            style={{ width: 32, height: 32, borderRadius: 6, border: `1px solid ${theme.border}`, cursor: "pointer", padding: 2 }} />
-                          <input value={brandingDraft.primary_hex || ""} onChange={e => setBrandingDraft(p => ({ ...p, primary_hex: e.target.value }))}
-                            placeholder="#000000" style={{ flex: 1, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
+                      {["primary_hex","secondary_hex"].map(key => (
+                        <div key={key} style={{ flex: 1 }}>
+                          <div style={{ fontSize: 10, color: theme.textMuted, marginBottom: 3 }}>{key === "primary_hex" ? "Primary" : "Secondary"} Hex</div>
+                          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            <input type="color" value={brandingDraft[key] || "#000000"} onChange={e => setBrandingDraft(p => ({ ...p, [key]: e.target.value }))}
+                              style={{ width: 32, height: 32, borderRadius: 6, border: `1px solid ${theme.border}`, cursor: "pointer", padding: 2 }} />
+                            <input value={brandingDraft[key] || ""} onChange={e => setBrandingDraft(p => ({ ...p, [key]: e.target.value }))}
+                              placeholder="#000000" style={{ flex: 1, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
+                          </div>
                         </div>
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 10, color: theme.textMuted, marginBottom: 3 }}>Secondary Hex</div>
-                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <input type="color" value={brandingDraft.secondary_hex || "#000000"} onChange={e => setBrandingDraft(p => ({ ...p, secondary_hex: e.target.value }))}
-                            style={{ width: 32, height: 32, borderRadius: 6, border: `1px solid ${theme.border}`, cursor: "pointer", padding: 2 }} />
-                          <input value={brandingDraft.secondary_hex || ""} onChange={e => setBrandingDraft(p => ({ ...p, secondary_hex: e.target.value }))}
-                            placeholder="#000000" style={{ flex: 1, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
-                        </div>
-                      </div>
+                      ))}
                     </div>
                   </div>
                 ) : (
@@ -1035,18 +1005,12 @@ export default function Pipeline() {
                       ? <img src={branding.logo_url} alt="logo" style={{ height: 32, objectFit: "contain", borderRadius: 4 }} onError={e => { e.target.style.display = "none"; }} />
                       : <div style={{ fontSize: 12, color: theme.textMuted }}>No logo set</div>
                     }
-                    {branding.primary_hex && (
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <div style={{ width: 16, height: 16, borderRadius: 3, background: branding.primary_hex, border: `1px solid ${theme.border}` }} />
-                        <span style={{ fontSize: 11, color: theme.textMuted }}>{branding.primary_hex}</span>
+                    {["primary_hex","secondary_hex"].map(key => branding[key] && (
+                      <div key={key} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <div style={{ width: 16, height: 16, borderRadius: 3, background: branding[key], border: `1px solid ${theme.border}` }} />
+                        <span style={{ fontSize: 11, color: theme.textMuted }}>{branding[key]}</span>
                       </div>
-                    )}
-                    {branding.secondary_hex && (
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <div style={{ width: 16, height: 16, borderRadius: 3, background: branding.secondary_hex, border: `1px solid ${theme.border}` }} />
-                        <span style={{ fontSize: 11, color: theme.textMuted }}>{branding.secondary_hex}</span>
-                      </div>
-                    )}
+                    ))}
                     {!branding.primary_hex && !branding.secondary_hex && !branding.logo_url && (
                       <div style={{ fontSize: 12, color: theme.textMuted }}>No branding set — click Edit to add</div>
                     )}
@@ -1058,16 +1022,11 @@ export default function Pipeline() {
               <Card style={{ marginBottom: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: theme.text }}>Invoices</div>
-                  <button onClick={() => setAddingInvoice(v => !v)}
-                    style={{ fontSize: 11, fontWeight: 700, color: theme.primary, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                  <button onClick={() => setAddingInvoice(v => !v)} style={{ fontSize: 11, fontWeight: 700, color: theme.primary, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
                     {addingInvoice ? "Cancel" : "+ Add"}
                   </button>
                 </div>
-
-                {invoices.length === 0 && !addingInvoice && (
-                  <div style={{ fontSize: 12, color: theme.textMuted }}>No invoices yet.</div>
-                )}
-
+                {invoices.length === 0 && !addingInvoice && <div style={{ fontSize: 12, color: theme.textMuted }}>No invoices yet.</div>}
                 {invoices.map(inv => {
                   const statusColors = { draft: theme.textMuted, sent: "#2563eb", paid: "#2d7a46", overdue: theme.danger };
                   return (
@@ -1085,16 +1044,14 @@ export default function Pipeline() {
                     </div>
                   );
                 })}
-
                 {addingInvoice && (
                   <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
                     <input value={newInvoice.label} onChange={e => setNewInvoice(p => ({ ...p, label: e.target.value }))}
-                      placeholder="Invoice label (e.g. Deposit — RenderATL 2025)"
+                      placeholder="Invoice label (e.g. Deposit — Render ATL 2026)"
                       style={{ padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
                     <div style={{ display: "flex", gap: 6 }}>
                       <input type="number" value={newInvoice.amount} onChange={e => setNewInvoice(p => ({ ...p, amount: e.target.value }))}
-                        placeholder="Amount ($)"
-                        style={{ flex: 1, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
+                        placeholder="Amount ($)" style={{ flex: 1, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
                       <input type="date" value={newInvoice.due_date} onChange={e => setNewInvoice(p => ({ ...p, due_date: e.target.value }))}
                         style={{ flex: 1, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none" }} />
                     </div>
@@ -1109,7 +1066,7 @@ export default function Pipeline() {
                 )}
               </Card>
 
-              {/* Portal Invite */}
+              {/* Portal access status (read-only here — invite button lives in proposal stage) */}
               <Card>
                 <div style={{ fontSize: 12, fontWeight: 700, color: theme.text, marginBottom: 8 }}>Portal Access</div>
                 {inviteSent ? (
@@ -1118,15 +1075,11 @@ export default function Pipeline() {
                     {selected.portal_invite_date && (
                       <div style={{ fontSize: 11, color: theme.textMuted }}>{new Date(selected.portal_invite_date).toLocaleDateString()}</div>
                     )}
+                    <div style={{ fontSize: 11, color: theme.textMuted }}>· {selected.portal_client_email}</div>
                   </div>
                 ) : (
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <Button size="sm" onClick={sendPortalInvite} disabled={sendingInvite || (!selected.contact_email && !selected.email)}>
-                      {sendingInvite ? "Sending…" : "Send Portal Invite"}
-                    </Button>
-                    <div style={{ fontSize: 11, color: theme.textMuted }}>
-                      {(!selected.contact_email && !selected.email) ? "No contact email on record" : `Will invite ${selected.contact_email || selected.email}`}
-                    </div>
+                  <div style={{ fontSize: 12, color: theme.textMuted }}>
+                    Invite will be sent from the Proposal stage once a proposal has been generated.
                   </div>
                 )}
               </Card>

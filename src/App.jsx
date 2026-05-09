@@ -19,6 +19,7 @@ import ActivationConfig from "./pages/ActivationConfig";
 import EventCommand from "./pages/EventCommand";
 import ScheduleManager from "./pages/ScheduleManager";
 import DocumentGenerator from "./pages/DocumentGenerator";
+import HR from "./pages/HR";
 import { theme } from "./theme";
 
 function AppShell({ children }) {
@@ -54,6 +55,7 @@ export default function App() {
           <Route path="/analytics" element={<ProtectedRoute><AppShell><Analytics /></AppShell></ProtectedRoute>} />
           <Route path="/documents" element={<ProtectedRoute><AppShell><DocumentGenerator /></AppShell></ProtectedRoute>} />
           <Route path="/inbox" element={<ProtectedRoute><AppShell><Inbox /></AppShell></ProtectedRoute>} />
+          <Route path="/hr" element={<ProtectedRoute><AppShell><HR /></AppShell></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </BrowserRouter>
