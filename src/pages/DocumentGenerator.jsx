@@ -216,6 +216,8 @@ export default function DocumentGenerator() {
     contractorName: "",
     contractorEmail: "",
     scopeNotes: "",
+    contractorType: "",
+    estimatedHours: "",
   });
 
   // Load events and engagements
@@ -303,25 +305,47 @@ export default function DocumentGenerator() {
 
       // Load contractors
       try {
-        const talentSnap = await getDocs(
-          query(
-            collection(db, "volunteerProfiles"),
-            where("isContractor", "==", true),
-          ),
-        );
-        const emailMap = {};
         const poolSnap = await getDocs(collection(db, "talent_pool"));
-        poolSnap.docs.forEach((d) => {
-          const data = d.data();
-          if (data.uid && data.email) emailMap[data.uid] = data.email;
-        });
-        setContractors(
-          talentSnap.docs.map((d) => ({
-            id: d.id,
+        const poolContractors = poolSnap.docs
+          .map(d => ({
+            id:              d.id,
+            uid:             d.data().uid || d.id, // doc ID is the uid
             ...d.data(),
-            email: emailMap[d.data().uid] || "",
-          })),
-        );
+          }))
+          .filter(d => !!d.contractor_type);
+ 
+        if (poolContractors.length === 0) {
+          setContractors([]);
+        } else {
+          // Cross-reference volunteerProfiles for name + ic_agreement_signed
+          const profileMap = {};
+          const profileSnap = await getDocs(collection(db, "volunteerProfiles"));
+          profileSnap.docs.forEach(d => {
+            const data = d.data();
+            // profile doc ID = uid, or uid field
+            const key = data.uid || d.id;
+            if (key) profileMap[key] = data;
+          });
+ 
+          const merged = poolContractors.map(contractor => {
+            const profile = profileMap[contractor.uid] || {};
+            const name =
+              contractor.name ||
+              (profile.first_name && profile.last_name
+                ? `${profile.first_name} ${profile.last_name}`
+                : profile.name || "");
+            return {
+              id:                  contractor.id,
+              uid:                 contractor.uid,
+              name,
+              email:               contractor.email || profile.email || "",
+              contractor_type:     contractor.contractor_type,
+              ic_agreement_signed: !!profile.ic_agreement_signed,
+            };
+          }).filter(c => c.name);
+ 
+          setContractors(merged);
+        }
       } catch (e) {
         console.error("contractor load error:", e);
       }
@@ -336,8 +360,10 @@ export default function DocumentGenerator() {
     if (!selectedContractor) return;
     setForm((p) => ({
       ...p,
-      contractorName: selectedContractor.name || "",
-      contractorEmail: selectedContractor.email || "",
+      contractorName:  selectedContractor.name             || "",
+      contractorEmail: selectedContractor.email            || "",
+      // Auto-populate role from talent_pool record — M&M can override
+      contractorType:  selectedContractor.contractor_type  || p.contractorType || "",
     }));
     setContractorEmail(selectedContractor.email || "");
   }, [selectedContractor]);
@@ -401,8 +427,18 @@ export default function DocumentGenerator() {
           setGenerating(false);
           return;
         }
+        if (!form.contractorType) {
+          setError("Select a contractor role before generating the ICA.");
+          setGenerating(false);
+          return;
+        }
         ({ blob, filename } = await generateICAgreement({
-          contractorName: form.contractorName,
+          contractorName:  form.contractorName,
+          contractorType:  form.contractorType,
+          eventName:       selectedContext?.name                                    || "",
+          eventDate:       selectedContext?.start_date || selectedContext?.event_date || "TBD",
+          eventVenue:      selectedContext?.venue      || selectedContext?.location   || "TBD",
+          estimatedHours:  form.estimatedHours                                      || "",
           operator,
           today,
         }));
@@ -1112,7 +1148,7 @@ export default function DocumentGenerator() {
                 </div>
               </div>
 
-              {/* IC Agreement contractor selector */}
+              {/* IC Agreement — Contractor */}
               <div
                 style={{
                   background: "#fff",
@@ -1137,7 +1173,7 @@ export default function DocumentGenerator() {
                       letterSpacing: "0.08em",
                     }}
                   >
-                    IC Agreement — Contractor
+                    IC Agreement — Contractor Details
                   </div>
                 </div>
                 <div
@@ -1148,42 +1184,110 @@ export default function DocumentGenerator() {
                     gap: 10,
                   }}
                 >
+                  {/* Contractor selector */}
                   <Field label="Select Contractor">
                     <select
                       value={selectedContractor?.uid || ""}
                       onChange={(e) =>
                         setSelectedContractor(
-                          contractors.find((c) => c.uid === e.target.value) ||
-                            null,
+                          contractors.find(
+                            (c) => (c.uid || c.id) === e.target.value
+                          ) || null
                         )
                       }
                       style={inputStyle}
                     >
                       <option value="">— Select a contractor —</option>
                       {contractors.map((c) => (
-                        <option key={c.uid} value={c.uid}>
+                        <option key={c.uid || c.id} value={c.uid || c.id}>
                           {c.name} {c.ic_agreement_signed ? "✓" : ""}
                         </option>
                       ))}
                     </select>
                   </Field>
-                  <Field label="Contractor Email">
+ 
+                  {/* Role / contractor type — auto-populated, overridable */}
+                  <Field label="Contractor Role">
+                    <select
+                      value={form.contractorType || ""}
+                      onChange={(e) => f("contractorType")(e.target.value)}
+                      style={inputStyle}
+                    >
+                      <option value="">— Select role —</option>
+                      <option value="general_contractor">General Contractor ($22/hr)</option>
+                      <option value="technical_specialist">Technical Specialist ($28/hr)</option>
+                      <option value="team_lead">Team Lead ($30/hr)</option>
+                      <option value="ops_lead">Ops Lead ($55/hr)</option>
+                    </select>
+                  </Field>
+ 
+                  {/* Estimated hours — optional */}
+                  <Field label="Estimated Hours (optional)">
                     <input
-                      value={contractorEmail}
-                      onChange={(e) => setContractorEmail(e.target.value)}
-                      placeholder="contractor@email.com"
+                      value={form.estimatedHours || ""}
+                      onChange={(e) => f("estimatedHours")(e.target.value)}
+                      placeholder="e.g. 16 — leave blank if not yet confirmed"
                       style={inputStyle}
                     />
                   </Field>
+ 
+                  {/* Event details confirmation — pulled from selected event */}
+                  {selectedContext && (
+                    <div
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: 8,
+                        background: "rgba(28,74,54,0.05)",
+                        border: "1px solid rgba(28,74,54,0.15)",
+                        fontSize: 11,
+                        color: "#1C4A36",
+                        lineHeight: 1.7,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, marginBottom: 2 }}>
+                        Event details pulled from record:
+                      </div>
+                      <div>📅 {selectedContext.start_date || selectedContext.event_date || "Date TBD"}</div>
+                      <div>📍 {selectedContext.venue || selectedContext.location || "Venue TBD"}</div>
+                    </div>
+                  )}
+ 
+                  {/* Email confirmation / warning */}
+                  {selectedContractor && contractorEmail ? (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "#2d7a46",
+                        fontWeight: 600,
+                        padding: "4px 0",
+                      }}
+                    >
+                      ✉ Signing request will be sent to: {contractorEmail}
+                    </div>
+                  ) : selectedContractor && !contractorEmail ? (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "#C0392B",
+                        fontWeight: 600,
+                        padding: "4px 0",
+                      }}
+                    >
+                      ⚠ No email on file for this contractor. Add one to their talent pool record before sending.
+                    </div>
+                  ) : null}
+ 
+                  {/* Already signed notice */}
                   {selectedContractor?.ic_agreement_signed && (
                     <div
                       style={{
                         fontSize: 11,
                         color: "#2d7a46",
                         fontWeight: 700,
+                        padding: "4px 0",
                       }}
                     >
-                      ✓ IC Agreement already signed
+                      ✓ IC Agreement already signed for a previous engagement — a new one is required for {selectedContext?.name || "this event"}.
                     </div>
                   )}
                 </div>

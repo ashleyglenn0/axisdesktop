@@ -3,6 +3,7 @@ import { Guide, GUIDES } from "./PricingGuide";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../../firebase";
 import { theme } from "../../theme";
+import { DISCOUNT_TIERS, getDiscountTier, isDiscountAuthorized, DISCOUNT_REASON_MIN_LENGTH } from "./discountPolicy";
 
 const STEPS = ["CIMI Diagnostic", "Phase & Band", "Retainer Scope", "Hybrid?", "Summary"];
 
@@ -16,12 +17,16 @@ const CIMI_CATS = [
   { id: "founder_dependency", label: "Founder Dependency", guide: "Can the org operate without the founder in the room? How deep does the dependency run?" },
 ];
 
+// min/max added — previously only a display string ("rate"), so the typed Monthly Rate was
+// never actually checked against the band's documented range.
 const BANDS = [
-  { id: "band1", label: "Band 1", rate: "$3,000–5,000 / mo", cimiRange: "< 2.4", profile: "Foundational", desc: "Building from scratch. High M&M involvement. Full infrastructure design." },
-  { id: "band2", label: "Band 2", rate: "$4,000–6,000 / mo", cimiRange: "2.5–3.4", profile: "Structural Gaps", desc: "Fixing the gaps. System documentation, role definition, pipeline build." },
-  { id: "band3", label: "Band 3", rate: "$6,000–8,000 / mo", cimiRange: "3.5–4.4", profile: "Maturing", desc: "Optimization and leadership. Scaling what works. Reducing founder dependency." },
-  { id: "band4", label: "Band 4", rate: "$8,000–10,000 / mo", cimiRange: "4.5–5.0", profile: "Embedded Partner", desc: "Strategic partnership. High-level advisory. Minimal hands-on build work." },
+  { id: "band1", label: "Band 1", rate: "$3,000–5,000 / mo", min: 3000, max: 5000, cimiRange: "< 2.4", profile: "Foundational", desc: "Building from scratch. High M&M involvement. Full infrastructure design." },
+  { id: "band2", label: "Band 2", rate: "$4,000–6,000 / mo", min: 4000, max: 6000, cimiRange: "2.5–3.4", profile: "Structural Gaps", desc: "Fixing the gaps. System documentation, role definition, pipeline build." },
+  { id: "band3", label: "Band 3", rate: "$6,000–8,000 / mo", min: 6000, max: 8000, cimiRange: "3.5–4.4", profile: "Maturing", desc: "Optimization and leadership. Scaling what works. Reducing founder dependency." },
+  { id: "band4", label: "Band 4", rate: "$8,000–10,000 / mo", min: 8000, max: 10000, cimiRange: "4.5–5.0", profile: "Embedded Partner", desc: "Strategic partnership. High-level advisory. Minimal hands-on build work." },
 ];
+
+const DIAGNOSTIC_FEE_RANGE = { min: 2500, max: 5000 };
 
 const P4_TIERS = [
   { id: "full_service", label: "Full Service", desc: "Axis + Framework + M&M team on the ground" },
@@ -53,8 +58,16 @@ function getMaturityFromCIMI(avg) {
   return "Embedded Partner";
 }
 
-export default function AdvisoryEngine({ event, operator, pipelineId, onComplete, onBack }) {
+// event: the selected event/pipeline record
+// hybridExecutionResult: the completed, already-logged Tier Engine run for the execution
+//   component of a Hybrid engagement (passed down from Pricing.jsx). When present, this
+//   engagement IS hybrid — no manual toggle, no manual price entry. When absent, this is a
+//   standalone Pillar 4 advisory engagement.
+// hybridGroupId: shared id linking this entry's pricing_log record to the Tier Engine
+//   record referenced by hybridExecutionResult.
+export default function AdvisoryEngine({ event, operator, pipelineId, hybridExecutionResult, hybridGroupId, onComplete, onBack }) {
   const [step, setStep] = useState(0);
+  const isHybrid = !!hybridExecutionResult;
 
   // CIMI
   const [cimiInputs, setCimiInputs] = useState({});
@@ -72,26 +85,33 @@ export default function AdvisoryEngine({ event, operator, pipelineId, onComplete
   const [p4Tier, setP4Tier] = useState("full_service");
   const [phaseOverride, setPhaseOverride] = useState("");
 
-  // Hybrid
-  const [isHybrid, setIsHybrid] = useState(false);
-  const [hybridPillar, setHybridPillar] = useState("P1");
-  const [hybridPrice, setHybridPrice] = useState("");
-  const [hybridFounder, setHybridFounder] = useState("");
-  const [hybridNote, setHybridNote] = useState("");
-
-  // Discount
+  // Discount (shared policy — see discountPolicy.js)
   const [discountType, setDiscountType] = useState("none");
   const [discountPct, setDiscountPct] = useState(0);
-  const [discountFounder, setDiscountFounder] = useState("");
+  const [discountAuthorizer, setDiscountAuthorizer] = useState("");
+  const [discountAuthorizer2, setDiscountAuthorizer2] = useState("");
+  const [discountReason, setDiscountReason] = useState("");
 
   const selectedBand = BANDS.find(b => b.id === selectedBandId);
   const monthly = parseFloat(monthlyRate) || 0;
-  const diagnostic = parseFloat(diagnosticFee) || 0;
-  const hybridTotal = parseFloat(hybridPrice) || 0;
-  const maxDiscount = discountType === "strategic" ? 0.15 : discountType === "standard" ? 0.10 : 0;
-  const actualDiscount = Math.min(discountPct / 100, maxDiscount);
-  const discountCheck = discountType === "none" || discountFounder.trim().length > 0;
-  const canSubmit = cimiScored && selectedBandId && monthlyRate && discountCheck;
+  const diagnosticApplies = selectedBandId === "band1" || selectedBandId === "band2";
+  const diagnostic = diagnosticApplies ? (parseFloat(diagnosticFee) || 0) : 0;
+
+  const discountTier = getDiscountTier(discountType);
+  const actualDiscount = Math.min(discountPct / 100, discountTier.max);
+  // Discount now actually reduces the billed rate — previously it was captured for the
+  // record but never applied to monthlyRate, so the "final" number and the discount %
+  // shown could silently disagree.
+  const monthlyFinal = Math.round(monthly * (1 - actualDiscount));
+  const discountAmount = monthly - monthlyFinal;
+  const discountCheck = isDiscountAuthorized(discountType, discountAuthorizer, discountAuthorizer2, discountReason);
+
+  const monthlyInRange = !selectedBand || (monthly >= selectedBand.min && monthly <= selectedBand.max);
+  // Discount is authorized to bring the final rate down, but not below the band's own
+  // floor — mirrors TierEngine's Floor Check. "Fix the scope, not the floor."
+  const bandFloorCheck = !selectedBand || monthlyFinal >= selectedBand.min;
+
+  const canSubmit = cimiScored && selectedBandId && monthlyRate && monthlyInRange && bandFloorCheck && discountCheck;
 
   const handleSubmit = async () => {
     const run = {
@@ -109,16 +129,21 @@ export default function AdvisoryEngine({ event, operator, pipelineId, onComplete
       phase_confirmed: phaseOverride || recommendedPhase,
       retainer_band: selectedBandId,
       retainer_band_label: selectedBand?.label,
-      monthly_rate: monthly,
+      monthly_rate_base: monthly,
+      monthly_rate: monthlyFinal,
       diagnostic_fee: diagnostic,
       p4_tier: p4Tier,
       is_hybrid: isHybrid,
-      hybrid_pillar: isHybrid ? hybridPillar : null,
-      hybrid_price: isHybrid ? hybridTotal : null,
-      hybrid_founder: isHybrid ? hybridFounder : null,
+      hybrid_pillar: isHybrid ? hybridExecutionResult.pillar : null,
+      hybrid_price: isHybrid ? hybridExecutionResult.final_price : null,
+      hybrid_tier_log_id: isHybrid ? (hybridExecutionResult.id || null) : null,
+      hybrid_group_id: hybridGroupId || null,
       discount_type: discountType,
       discount_pct: actualDiscount * 100,
-      discount_founder: discountFounder || null,
+      discount_amount: discountAmount,
+      discount_authorizer: discountAuthorizer || null,
+      discount_authorizer_2: discountTier.authorizers === 2 ? (discountAuthorizer2 || null) : null,
+      discount_reason: discountReason || null,
       status: "pending",
       created_at: serverTimestamp(),
       revision: false,
@@ -136,7 +161,7 @@ export default function AdvisoryEngine({ event, operator, pipelineId, onComplete
   return (
     <div>
       <button onClick={onBack} style={backBtnStyle}>← Back</button>
-      <ContextBar event={event} />
+      <ContextBar event={event} isHybrid={isHybrid} />
       <StepBar steps={STEPS} current={step} />
 
       {step === 0 && (
@@ -240,17 +265,22 @@ export default function AdvisoryEngine({ event, operator, pipelineId, onComplete
 
       {step === 2 && (
         <StepCard title="Retainer Scope" sub="Enter the confirmed monthly rate, diagnostic fee if applicable, and P4 engagement tier.">
-          <Field label="Monthly Retainer Rate ($)" required>
+          <Field label={`Monthly Retainer Rate ($)${selectedBand ? ` — ${selectedBand.label} range: $${selectedBand.min.toLocaleString()}–$${selectedBand.max.toLocaleString()}` : ""}`} required>
             <input type="number" value={monthlyRate} onChange={e => setMonthlyRate(e.target.value)} style={inputStyle} placeholder="e.g. 4500" />
+            {monthlyRate && !monthlyInRange && (
+              <div style={{ fontSize: 11, color: "#e07070", marginTop: 4 }}>
+                ${monthly.toLocaleString()} is outside {selectedBand?.label}'s documented range (${selectedBand?.min.toLocaleString()}–${selectedBand?.max.toLocaleString()}). Adjust the rate or pick a different band.
+              </div>
+            )}
           </Field>
 
-          {(selectedBandId === "band1" || selectedBandId === "band2") && (
+          {diagnosticApplies && (
             <>
-              <Field label="Diagnostic Fee ($) — Phase 1 only">
+              <Field label={`Diagnostic Fee ($) — Phase 1 only (typical range $${DIAGNOSTIC_FEE_RANGE.min.toLocaleString()}–$${DIAGNOSTIC_FEE_RANGE.max.toLocaleString()})`}>
                 <input type="number" value={diagnosticFee} onChange={e => setDiagnosticFee(e.target.value)} style={inputStyle} placeholder="2500–5000" />
               </Field>
               <div style={{ fontSize: 12, color: theme.onSurface + "60", marginBottom: 14, padding: "8px 12px", borderRadius: 6, background: theme.primaryDark + "40" }}>
-                Diagnostic fee is a one-time charge in addition to the monthly retainer. It is not credited toward the retainer.
+                Diagnostic fee is a one-time charge in addition to the monthly retainer. It is not credited toward the retainer, and is not affected by any discount below.
               </div>
             </>
           )}
@@ -272,42 +302,37 @@ export default function AdvisoryEngine({ event, operator, pipelineId, onComplete
             </div>
           </div>
 
-          <NavRow onBack={() => setStep(1)} onNext={() => setStep(3)} nextDisabled={!monthlyRate} />
+          <NavRow onBack={() => setStep(1)} onNext={() => setStep(3)} nextDisabled={!monthlyRate || !monthlyInRange} />
         </StepCard>
       )}
 
       {step === 3 && (
-        <StepCard title="Hybrid Execution?" sub="If this P4 engagement also includes execution (Pillar 1, 2, or 3), enter the execution pricing separately. Advisory and execution are always independent line items — never blended.">
-          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: theme.onSurface, marginBottom: 16 }}>
-            <input type="checkbox" checked={isHybrid} onChange={e => setIsHybrid(e.target.checked)} style={{ accentColor: theme.accent }} />
-            This is a hybrid engagement — include execution pricing
-          </label>
-
-          {GUIDES.hybrid}
-          {isHybrid && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 16, borderRadius: 8, background: theme.surface, border: `1px solid ${theme.primaryDark}` }}>
-              <div style={{ fontSize: 12, color: theme.onSurface + "60", padding: "8px 12px", borderRadius: 6, background: "rgba(100,180,255,0.08)", border: "1px solid rgba(100,180,255,0.2)" }}>
-                Run the Tier Engine separately for the execution component. Enter the confirmed execution price here as a separate line item.
+        <StepCard title="Hybrid Execution" sub={isHybrid
+          ? "Execution pricing was pulled directly from a completed Tier Engine run. Advisory and execution remain separate line items — never blended."
+          : "This is a standalone Pillar 4 advisory engagement — no execution component attached."}>
+          {isHybrid ? (
+            <div style={{ borderRadius: 10, overflow: "hidden", border: "1px solid rgba(100,180,255,0.3)" }}>
+              <div style={{ padding: "10px 14px", background: "rgba(100,180,255,0.1)", fontSize: 12, fontWeight: 700, color: "#6ab4ff", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                Execution Component ({hybridExecutionResult.pillar}) — Pulled from Tier Engine, Read-Only
               </div>
-              <Field label="Execution Pillar">
-                <select value={hybridPillar} onChange={e => setHybridPillar(e.target.value)} style={inputStyle}>
-                  <option value="P1">Pillar 1 — Event Execution</option>
-                  <option value="P2">Pillar 2 — Leadership Training</option>
-                  <option value="P3">Pillar 3 — Co-Execution</option>
-                </select>
-              </Field>
-              <Field label="Execution Price ($) — from Tier Engine run" required>
-                <input type="number" value={hybridPrice} onChange={e => setHybridPrice(e.target.value)} style={inputStyle} placeholder="From completed Tier Engine run" />
-              </Field>
-              <Field label="Authorizing Founder" required>
-                <input value={hybridFounder} onChange={e => setHybridFounder(e.target.value)} style={inputStyle} placeholder="Ashley Glenn or Mikal Driver" />
-              </Field>
-              <Field label="Notes">
-                <textarea value={hybridNote} onChange={e => setHybridNote(e.target.value)} style={{ ...inputStyle, height: 60, resize: "vertical" }} placeholder="Any notes on the hybrid pricing connection..." />
-              </Field>
+              {[
+                ["Tier", hybridExecutionResult.tier],
+                ["Execution Price", `$${(hybridExecutionResult.final_price || 0).toLocaleString()}`],
+                ["Logged By", hybridExecutionResult.operator],
+              ].map(([label, val], i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "9px 14px", background: i % 2 === 0 ? theme.surface : theme.primaryDark + "30", fontSize: 13, color: theme.onSurface + "90" }}>
+                  <span>{label}</span><span style={{ fontWeight: 600, color: theme.onSurface }}>{val}</span>
+                </div>
+              ))}
+              <div style={{ padding: "8px 14px", fontSize: 11, color: theme.onSurface + "50", background: theme.surface }}>
+                This number can't be edited here — it's the actual logged Tier Engine result (id: {hybridExecutionResult.id || "unknown"}). To change it, go back and re-run the Tier Engine.
+              </div>
+            </div>
+          ) : (
+            <div style={{ padding: "12px 14px", borderRadius: 8, background: theme.primaryDark + "40", fontSize: 12, color: theme.onSurface + "70" }}>
+              No execution component attached. To create a hybrid engagement, select "Hybrid" as the pillar before starting the engine — that runs the Tier Engine for the execution piece first and brings you here with the numbers already filled in. There's no way to manually attach execution pricing from inside the Advisory Engine anymore — it always has to come from a real, logged Tier Engine run.
             </div>
           )}
-
           <NavRow onBack={() => setStep(2)} onNext={() => setStep(4)} />
         </StepCard>
       )}
@@ -324,23 +349,25 @@ export default function AdvisoryEngine({ event, operator, pipelineId, onComplete
               ["Maturity Band", maturityBand],
               ["Phase", phaseOverride || recommendedPhase],
               ["Retainer Band", selectedBand?.label + " — " + selectedBand?.rate],
-              ["Monthly Rate", `$${monthly.toLocaleString()}`],
-              diagnostic > 0 && ["Diagnostic Fee (one-time)", `$${diagnostic.toLocaleString()}`],
+              ["Monthly Rate (before discount)", `$${monthly.toLocaleString()}`],
+              actualDiscount > 0 && ["Discount", `-$${discountAmount.toLocaleString()} (${(actualDiscount * 100).toFixed(0)}% ${discountTier.label})`],
+              ["Monthly Rate (final)", `$${monthlyFinal.toLocaleString()}`],
+              diagnostic > 0 && ["Diagnostic Fee (one-time, not discounted)", `$${diagnostic.toLocaleString()}`],
               ["P4 Tier", P4_TIERS.find(t => t.id === p4Tier)?.label],
             ].filter(Boolean).map(([label, val], i) => (
               <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "9px 14px", background: i % 2 === 0 ? theme.surface : theme.primaryDark + "30", fontSize: 13, color: theme.onSurface + "90" }}>
-                <span>{label}</span><span style={{ fontWeight: 600, color: theme.onSurface }}>{val}</span>
+                <span>{label}</span><span style={{ fontWeight: label === "Monthly Rate (final)" ? 700 : 600, color: theme.onSurface }}>{val}</span>
               </div>
             ))}
           </div>
 
-          {isHybrid && hybridPrice && (
+          {isHybrid && (
             <div style={{ borderRadius: 10, overflow: "hidden", border: "1px solid rgba(100,180,255,0.3)", marginBottom: 16 }}>
               <div style={{ padding: "10px 14px", background: "rgba(100,180,255,0.1)", fontSize: 12, fontWeight: 700, color: "#6ab4ff", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                Execution Component ({hybridPillar}) — Separate Line Item
+                Execution Component ({hybridExecutionResult.pillar}) — Separate Line Item
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 14px", background: theme.surface, fontSize: 13, color: theme.onSurface + "90" }}>
-                <span>Execution Price</span><span style={{ fontWeight: 700, color: theme.onSurface }}>${parseFloat(hybridPrice).toLocaleString()}</span>
+                <span>Execution Price</span><span style={{ fontWeight: 700, color: theme.onSurface }}>${(hybridExecutionResult.final_price || 0).toLocaleString()}</span>
               </div>
             </div>
           )}
@@ -350,25 +377,37 @@ export default function AdvisoryEngine({ event, operator, pipelineId, onComplete
             <div style={{ fontSize: 12, fontWeight: 700, color: theme.onSurface + "80", marginBottom: 10 }}>Discount (optional)</div>
             <Field label="Discount Type">
               <select value={discountType} onChange={e => setDiscountType(e.target.value)} style={inputStyle}>
-                <option value="none">No discount</option>
-                <option value="standard">Standard (≤10%) — Founder review</option>
-                <option value="strategic">Strategic (≤15%) — Founder only</option>
+                {DISCOUNT_TIERS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
               </select>
             </Field>
             {discountType !== "none" && (
               <>
-                <Field label={`Discount % (max ${discountType === "strategic" ? "15" : "10"}%)`}>
-                  <input type="number" value={discountPct} min={0} max={discountType === "strategic" ? 15 : 10}
-                    onChange={e => setDiscountPct(Math.min(e.target.value, discountType === "strategic" ? 15 : 10))} style={inputStyle} />
+                <Field label={`Discount % (max ${(discountTier.max * 100).toFixed(0)}%)`}>
+                  <input type="number" value={discountPct} min={0} max={discountTier.max * 100}
+                    onChange={e => setDiscountPct(Math.min(e.target.value, discountTier.max * 100))} style={inputStyle} />
                 </Field>
-                <Field label="Authorizing Founder" required>
-                  <input value={discountFounder} onChange={e => setDiscountFounder(e.target.value)} style={inputStyle} placeholder="Ashley Glenn or Mikal Driver" />
+                <Field label={discountTier.authorizers === 2 ? "Authorizing Founder #1" : "Authorizing Name"} required>
+                  <input value={discountAuthorizer} onChange={e => setDiscountAuthorizer(e.target.value)} style={inputStyle} placeholder={discountTier.id === "ops" ? "Shanell Jefferson (or a Founder)" : "Ashley Glenn or Mikal Driver"} />
+                </Field>
+                {discountTier.authorizers === 2 && (
+                  <Field label="Authorizing Founder #2 (must be the other Founder)" required>
+                    <input value={discountAuthorizer2} onChange={e => setDiscountAuthorizer2(e.target.value)} style={inputStyle} placeholder="The other Founder" />
+                  </Field>
+                )}
+                <Field label={`Reason for Discount (minimum ${DISCOUNT_REASON_MIN_LENGTH} characters)`} required>
+                  <textarea value={discountReason} onChange={e => setDiscountReason(e.target.value)}
+                    style={{ ...inputStyle, height: 60, resize: "vertical" }}
+                    placeholder="Why is this discount warranted? e.g. budget constraint, competitive situation, strategic relationship..." />
                 </Field>
               </>
             )}
           </div>
 
-          <ValidationBadge ok={discountCheck} label={discountCheck ? "Discount Check: OK" : "Discount Check: Founder name required"} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <ValidationBadge ok={monthlyInRange} label={monthlyInRange ? `Retainer Range Check: OK — within ${selectedBand?.label}` : "Retainer Range Check: FAIL — base rate is outside the selected band's range"} />
+            <ValidationBadge ok={bandFloorCheck} label={bandFloorCheck ? "Discounted Rate Floor Check: OK" : `Discounted Rate Floor Check: FAIL — final rate is below ${selectedBand?.label}'s $${selectedBand?.min.toLocaleString()} floor`} />
+            <ValidationBadge ok={discountCheck} label={discountCheck ? "Discount Check: OK" : "Discount Check: authorization required"} />
+          </div>
 
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
             <button onClick={() => setStep(3)} style={secondaryBtnStyle}>← Back</button>
@@ -390,12 +429,13 @@ export default function AdvisoryEngine({ event, operator, pipelineId, onComplete
 }
 
 // ─── Shared ────────────────────────────────────────────────────────
-function ContextBar({ event }) {
+function ContextBar({ event, isHybrid }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderRadius: 8, background: theme.surface, border: `1px solid ${theme.primaryDark}`, marginBottom: 20, fontSize: 13 }}>
       <span style={{ fontWeight: 700, color: theme.onSurface }}>{event?.name}</span>
       {event?.client && <span style={{ color: theme.onSurface + "60" }}>{event.client}</span>}
       <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4, background: "rgba(180,100,255,0.15)", color: "#c080ff" }}>Advisory Engine</span>
+      {isHybrid && <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4, background: "rgba(100,180,255,0.15)", color: "#6ab4ff" }}>Hybrid</span>}
     </div>
   );
 }

@@ -74,27 +74,35 @@ function getWRRBand(score) {
   return                  { band: "Critical Consequence", level: "CRIT", reserve: "Level 3 — full reserve", color: "#e07070" };
 }
 
+// Ordered from MOST severe to LEAST — a single high-severity signal on either axis
+// must win over averaging. (Previously ELEV/HIGH-WRR was checked before HIGH-VRI/CRIT-WRR,
+// which meant an Elevated-VRI + Critical-WRR event — hard to staff AND catastrophic if it
+// fails — got short-circuited into Level 2 instead of Level 3. Fixed by reordering.)
 function getReserveLevel(vriLevel, wrrLevel) {
-  if (vriLevel === "LOW"  && wrrLevel === "LOW")  return { level: 1, pct: 0,    label: "No reserve required" };
+  if (vriLevel === "HIGH" || wrrLevel === "CRIT") return { level: 3, pct: 0.20, label: "Level 3 — 20% full reserve" };
+  if (vriLevel === "ELEV" || wrrLevel === "HIGH") return { level: 2, pct: 0.15, label: "Level 2 — 15% reserve" };
+  if (vriLevel === "MOD"  && wrrLevel === "MOD")  return { level: 2, pct: 0.15, label: "Level 2 — 15% reserve" };
   if (vriLevel === "LOW"  && wrrLevel === "MOD")  return { level: 1, pct: 0.10, label: "Level 1 — 10% reserve" };
   if (vriLevel === "MOD"  && wrrLevel === "LOW")  return { level: 1, pct: 0.10, label: "Level 1 — 10% reserve" };
-  if (vriLevel === "MOD"  && wrrLevel === "MOD")  return { level: 2, pct: 0.15, label: "Level 2 — 15% reserve" };
-  if (vriLevel === "ELEV" || wrrLevel === "HIGH") return { level: 2, pct: 0.15, label: "Level 2 — 15% reserve" };
-  if (vriLevel === "HIGH" || wrrLevel === "CRIT") return { level: 3, pct: 0.20, label: "Level 3 — 20% full reserve" };
+  if (vriLevel === "LOW"  && wrrLevel === "LOW")  return { level: 1, pct: 0,    label: "No reserve required" };
   return { level: 2, pct: 0.15, label: "Level 2 — 15% reserve" };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-export default function RiskLabor({ intake, onComplete, onBack }) {
+// `initial` = the previously-completed RiskLabor output (TierEngine's riskLaborData),
+// if the operator is navigating back to this step after already finishing it once.
+// Without this, every VRI/WRR selection and labor override is lost on Back — this
+// component unmounts entirely whenever TierEngine's step leaves 1.
+export default function RiskLabor({ intake, initial, onComplete, onBack }) {
   // ── VRI state ──────────────────────────────────────────────────────────────
-  const [vri, setVri] = useState({});
+  const [vri, setVri] = useState(initial?.vri_inputs || {});
 
   // ── WRR state ──────────────────────────────────────────────────────────────
-  const [wrr, setWrr] = useState({});
+  const [wrr, setWrr] = useState(initial?.wrr_inputs || {});
 
   // ── Labor Projection state ─────────────────────────────────────────────────
   const volunteerCount = parseInt(intake?.volunteer_count) || Math.ceil((parseInt(intake?.attendee_count) || 0) / 6);
-  const [laborInputs, setLaborInputs] = useState({
+  const [laborInputs, setLaborInputs] = useState(initial?.labor_inputs || {
     volunteer_count:     String(volunteerCount),
     event_days:          "1",
     hours_per_day:       "8",

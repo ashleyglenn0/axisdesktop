@@ -761,9 +761,34 @@ export async function generateSOW({ client, event, pricingLog, operator, form, t
 // ─────────────────────────────────────────────────────────────────────────────
 // IC AGREEMENT
 // ─────────────────────────────────────────────────────────────────────────────
-export async function generateICAgreement({ contractorName, operator, today }) {
+const ICA_RATE_CARD = {
+  team_lead:            { label: "Team Lead",            rate: 30 },
+  ops_lead:             { label: "Ops Lead",             rate: 55 },
+  general_contractor:   { label: "General Contractor",   rate: 22 },
+  technical_specialist: { label: "Technical Specialist", rate: 28 },
+};
+ 
+export async function generateICAgreement({
+  contractorName,
+  contractorType,
+  eventName,
+  eventDate,
+  eventVenue,
+  estimatedHours,
+  operator,
+  today,
+}) {
   const H = await h();
-
+ 
+  // Resolve role label and rate from contractor_type
+  const roleInfo    = ICA_RATE_CARD[contractorType] || null;
+  const roleLabel   = roleInfo?.label || contractorType || "To be confirmed";
+  const hourlyRate  = roleInfo?.rate  || null;
+  const rateDisplay = hourlyRate ? `$${hourlyRate}/hr` : "Per Event Engagement Addendum";
+  const hoursDisplay = estimatedHours
+    ? `${estimatedHours} hours (estimated — confirmed via shift assignment in Axis)`
+    : "To be confirmed via shift assignment in Axis";
+ 
   const opts = H.base("Independent Contractor Agreement");
   opts.sections[0].children = [
     H.sp(200),
@@ -772,26 +797,37 @@ export async function generateICAgreement({ contractorName, operator, today }) {
     H.para([H.run(contractorName, { size: 24, bold: true, color: H.GOLD })]),
     H.para([H.run(`Effective Date: ${today}  |  M&M Operations  |  v1.0`, { color: H.GRAY })]),
     H.sp(80),
-    H.notice("This Agreement is confidential and governs the working relationship between M&M Operations and the Contractor named above."),
+    H.notice("This Agreement governs a single event engagement only. A new agreement is required for each event worked. This is not a blanket or ongoing contractor relationship."),
     H.sp(160),
-
-    H.sec("PARTIES TO THIS AGREEMENT"),
+ 
+    H.sec("PARTIES & ENGAGEMENT DETAILS"),
     H.infoTbl([
-      ["Company",                   "M&M Operations LLC  |  Atlanta, Georgia"],
-      ["Contractor Legal Name",     contractorName],
-      ["Effective Date",            today],
+      ["Company",                    "M&M Operations LLC  |  Atlanta, Georgia"],
+      ["Contractor Legal Name",      contractorName],
+      ["Contractor Role",            roleLabel],
+      ["Event",                      eventName || "To be confirmed"],
+      ["Event Date(s)",              eventDate || "TBD"],
+      ["Event Venue / Location",     eventVenue || "TBD"],
+      ["Hourly Rate",                rateDisplay],
+      ["Estimated Hours",            hoursDisplay],
+      ["Effective Date",             today],
       ["Authorized Signatory (M&M)", operator],
     ]),
+    H.sp(80),
+    H.notice(
+      `This Agreement covers the ${eventName || "event"} engagement only. It does not create an ongoing contractor relationship, guarantee future engagements, or extend to any other event without a new signed agreement.`,
+      "FFF8E7", "#8a6800", H.GOLD
+    ),
     H.sp(160),
-
+ 
     H.sec("1. ENGAGEMENT & SCOPE OF SERVICES"),
-    H.para([H.run("Contractor agrees to provide event-based operational services as outlined in individual Event Engagement Addendums (\"Addendums\") issued by M&M for each engagement. Each Addendum specifies the event, role, shift schedule, compensation, and any engagement-specific requirements.")]),
+    H.para([H.run(`Contractor agrees to provide event-based operational services for ${eventName || "the event named above"} in the role of ${roleLabel}. Specific shift assignments, zones, and day-of responsibilities are documented in the Axis platform and communicated via M&M's standard briefing process.`)]),
     H.sp(80),
-    H.para([H.run("Contractor's role within any engagement is determined by M&M based on event complexity, Contractor's performance history, and operational need. Role assignments are documented in the applicable Addendum and in the Axis platform.")]),
+    H.para([H.run("Contractor understands that M&M operates a workforce progression model. Performance on this engagement is documented in Axis and may inform future role assignments, advancement consideration, and rate adjustments at M&M's discretion.")]),
     H.sp(80),
-    H.para([H.run("Contractor understands that M&M operates a workforce progression model. Initial engagements establish baseline performance data. Future role assignments, advancement, and contractor rate adjustments are determined by performance documentation and M&M's discretion.")]),
+    H.para([H.run("This Agreement does not guarantee any specific number of shifts, hours, or future engagements beyond the event named above.")]),
     H.sp(160),
-
+ 
     H.sec("2. INDEPENDENT CONTRACTOR STATUS"),
     H.para([H.run("Contractor is an independent contractor and not an employee, partner, joint venturer, or agent of M&M Operations. Nothing in this Agreement creates an employment relationship.")]),
     H.sp(80),
@@ -799,36 +835,42 @@ export async function generateICAgreement({ contractorName, operator, today }) {
       "Contractor retains control over the method and means of performing services within the scope defined by M&M",
       "Contractor is solely responsible for all federal, state, and local taxes on compensation received under this Agreement",
       "Contractor is not entitled to employee benefits including health insurance, retirement plans, paid time off, or workers' compensation",
-      "Contractor is free to provide services to other clients provided they do not conflict with M&M engagements or violate any provision of this Agreement",
+      "Contractor is free to provide services to other clients provided they do not conflict with this M&M engagement or violate any provision of this Agreement",
       "M&M will issue a Form 1099 to Contractors earning $600 or more in a calendar year",
     ].map(item => H.bul(item)),
     H.sp(160),
-
+ 
     H.sec("3. BACKGROUND CHECK REQUIREMENT"),
     H.para([H.run("As a condition of engagement with M&M Operations, all contractors are required to consent to and successfully complete a background check prior to their first active deployment. Background checks are conducted through M&M's approved screening provider. M&M reserves the right to deny or suspend engagement based on background check results at its sole discretion.")]),
     H.sp(80),
     H.notice("Background checks are non-negotiable. M&M places contractors in environments with high public visibility, VIP access, and sensitive operational responsibilities. Our clients trust us with their events. We protect that trust by knowing who is on our team."),
     H.sp(160),
-
+ 
     H.sec("4. COMPENSATION"),
-    H.para([H.run("Compensation for each engagement is defined in the applicable Event Engagement Addendum. No compensation is owed for services not covered by an executed Addendum.")]),
+    H.infoTbl([
+      ["Role",            roleLabel],
+      ["Hourly Rate",     rateDisplay],
+      ["Estimated Hours", hoursDisplay],
+      ["Payment Method",  "Direct deposit — Gusto payroll"],
+      ["Payment Timing",  "Net 14 days following event completion"],
+    ]),
     H.sp(80),
     ...[
-      "Payment is issued via direct deposit within Net 14 days of event completion unless otherwise specified in the Addendum",
+      "Payment is issued via direct deposit within Net 14 days of event completion",
       "M&M reserves the right to withhold payment pending completion of post-event documentation requirements including Axis check-out and incident reporting",
       "Disputed payments must be raised in writing within 7 days of the payment date",
-      "Contractor rate adjustments are made at M&M's discretion based on performance, role advancement, and market conditions",
+      "Estimated hours are based on assigned shifts — actual payment reflects hours worked and confirmed via Axis check-in/check-out records",
     ].map(item => H.bul(item)),
     H.sp(160),
-
+ 
     H.sec("5. SCOPE OF AUTHORITY"),
-    H.para([H.run("Contractor's authority is limited to the operational scope defined in their role assignment and Addendum. No contractor has authority to bind M&M Operations beyond their assigned floor responsibilities.")]),
+    H.para([H.run(`Contractor's authority is limited to the operational scope defined in their ${roleLabel} role assignment. No contractor has authority to bind M&M Operations beyond their assigned floor responsibilities.`)]),
     H.sp(80),
     H.para([H.bold("Contractor MAY:", { color: H.GREEN })]),
     H.sp(40),
     ...[
-      "Perform services within the scope and role defined in the Addendum",
-      "Make tactical decisions within their assigned authority level (Team Lead, Ops Lead, etc.)",
+      "Perform services within the scope and role defined in this Agreement and their Axis shift assignments",
+      "Make tactical decisions within their assigned authority level",
       "Communicate with event staff and volunteers within their chain of command",
       "Document incidents and decisions in the Axis platform as required",
     ].map(item => H.bul(item)),
@@ -839,20 +881,20 @@ export async function generateICAgreement({ contractorName, operator, today }) {
       "Bind M&M to any new agreements, commitments, or financial obligations",
       "Modify pricing, scope, or deliverables with any client or third party",
       "Represent ownership, partnership, or management authority in M&M",
-      "Make promises of additional services or deliverables beyond their Addendum",
+      "Make promises of additional services or deliverables beyond their assignment",
       "Communicate publicly on behalf of M&M including media, press, or social media",
       "Sign any document on behalf of M&M Operations",
     ].map(item => H.bul(item, H.RED)),
     H.sp(160),
-
+ 
     H.sec("6. AXIS PLATFORM USAGE"),
-    H.para([H.run("All active M&M contractors are required to use the Axis platform for check-in, check-out, incident reporting, scheduling, and engagement communication during M&M events. Access is provisioned by M&M for each engagement.")]),
+    H.para([H.run("All active M&M contractors are required to use the Axis platform for check-in, check-out, incident reporting, scheduling, and engagement communication during M&M events. Access is provisioned by M&M for this engagement.")]),
     H.sp(80),
-    H.para([H.run("Axis access is tied to the active engagement only. Access does not persist beyond the engagement term without M&M authorization. Contractor data within Axis is visible to M&M engagement leads and is used for performance documentation and progression scoring.")]),
+    H.para([H.run(`Axis access is tied to the ${eventName || "event"} engagement only. Access does not persist beyond the engagement term without M&M authorization. Contractor data within Axis is visible to M&M engagement leads and is used for performance documentation.`)]),
     H.sp(80),
     H.para([H.run("Contractor agrees to use Axis as directed, maintain accurate records, and not share access credentials with any third party.")]),
     H.sp(160),
-
+ 
     H.sec("7. CONFIDENTIALITY"),
     ...[
       "M&M's pricing methodology, scoring models (VRI, WRR, CIMI), and internal operating systems are proprietary IP and must not be disclosed, replicated, or shared",
@@ -861,11 +903,11 @@ export async function generateICAgreement({ contractorName, operator, today }) {
       "Contractor may not use any M&M client relationship to solicit independent business from that client during or for 12 months following any M&M engagement involving that client",
     ].map(item => H.bul(item)),
     H.sp(160),
-
+ 
     H.sec("8. INTELLECTUAL PROPERTY"),
-    H.para([H.run("All work product, systems, documentation, and materials created by Contractor in connection with M&M engagements are the sole property of M&M Operations. Contractor assigns all rights, title, and interest in such work product to M&M upon creation. This includes event documentation, incident reports, volunteer management materials, training materials developed under M&M direction, and any work product created using M&M's systems, templates, or methodologies.")]),
+    H.para([H.run("All work product, systems, documentation, and materials created by Contractor in connection with this M&M engagement are the sole property of M&M Operations. Contractor assigns all rights, title, and interest in such work product to M&M upon creation.")]),
     H.sp(160),
-
+ 
     H.sec("9. NON-SOLICITATION"),
     H.para([H.run("During the term of this Agreement and for twelve (12) months following its conclusion, Contractor agrees not to:")]),
     H.sp(80),
@@ -875,38 +917,37 @@ export async function generateICAgreement({ contractorName, operator, today }) {
       "Use M&M's client relationships, operational methodologies, or proprietary systems to establish or support a competing service",
     ].map(item => H.bul(item)),
     H.sp(160),
-
+ 
     H.sec("10. TERMINATION"),
-    H.para([H.run("Either party may terminate this Agreement with written notice. The following termination conditions apply:")]),
-    H.sp(80),
     ...[
       "Convenience: Either party may terminate with 7 days written notice. Compensation is owed for work completed prior to termination.",
-      "For Cause — by M&M: M&M may terminate immediately for violation of confidentiality, failure to pass background check, misconduct during an engagement, or repeated performance failures documented in Axis.",
+      "For Cause — by M&M: M&M may terminate immediately for violation of confidentiality, misconduct during an engagement, or repeated performance failures documented in Axis.",
       "For Cause — by Contractor: Contractor may terminate immediately if M&M materially breaches payment obligations and fails to cure within 7 days of written notice.",
       "Post-Termination: Sections 7 (Confidentiality), 8 (IP), and 9 (Non-Solicitation) survive termination of this Agreement.",
     ].map(item => H.bul(item)),
     H.sp(160),
-
+ 
     H.sec("11. GENERAL PROVISIONS"),
     ...[
       "Governing Law: This Agreement is governed by the laws of the State of Georgia.",
-      "Entire Agreement: This Agreement, together with applicable Event Engagement Addendums, constitutes the entire agreement between the parties.",
+      "Single Engagement: This Agreement covers the event named above only and does not create an ongoing or blanket contractor relationship.",
+      "Entire Agreement: This Agreement, together with Axis shift assignments, constitutes the entire agreement between the parties for this engagement.",
       "Amendment: This Agreement may only be modified by a written amendment signed by both parties.",
       "Severability: If any provision is found unenforceable, the remaining provisions continue in full force.",
     ].map(item => H.bul(item)),
     H.sp(200),
-
+ 
     H.notice("Before Signing: Contractor must have completed or scheduled the required background check before this Agreement is executed.", H.LIGHT_RED, H.RED, H.RED),
     H.sp(160),
     H.sec("SIGNATURES"),
-    H.para([H.run("By signing below, both parties confirm they have read, understood, and agree to the terms of this Independent Contractor Agreement.")]),
+    H.para([H.run("By signing below, both parties confirm they have read, understood, and agree to the terms of this Independent Contractor Agreement for the engagement named above.")]),
     H.sp(160),
     H.sigBlock(operator, "Managing Director  |  M&M Operations LLC", "Contractor"),
     H.sp(200),
   ];
-
+ 
   const blob = await makeDoc(opts);
-  const filename = safeFilename(`MM_ICA_${contractorName}_${new Date().toISOString().slice(0, 10)}.docx`);
+  const filename = safeFilename(`MM_ICA_${contractorName}_${eventName || ""}_${new Date().toISOString().slice(0, 10)}.docx`);
   return { blob, filename };
 }
 

@@ -10,6 +10,10 @@ import { theme } from "../theme";
 
 const TABS = ["New Quote", "Pricing Log"];
 
+function makeHybridGroupId() {
+  return `hybrid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export default function Pricing() {
   const { activeUser } = useAuth();
   const [searchParams] = useSearchParams();
@@ -21,9 +25,16 @@ export default function Pricing() {
   const [events, setEvents] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [pillar, setPillar] = useState(null);
+  // Which P1/P2/P3 pairs with the P4 retainer when pillar === "HYBRID". Only relevant then.
+  const [hybridExecutionPillar, setHybridExecutionPillar] = useState("P1");
   const [engineStep, setEngineStep] = useState("select"); // select | configure | tier | advisory
   const [loadingEvents, setLoadingEvents] = useState(true);
   const [pipelineRecord, setPipelineRecord] = useState(null);
+
+  // Hybrid flow state: the completed Tier Engine run (execution component) gets handed here
+  // once logged, then passed into AdvisoryEngine as read-only data — no manual re-entry.
+  const [hybridGroupId, setHybridGroupId] = useState(null);
+  const [hybridExecutionResult, setHybridExecutionResult] = useState(null);
 
   useEffect(() => {
     const fetchEvents = async () => {
@@ -97,15 +108,30 @@ export default function Pricing() {
     setEngineStep("configure");
   };
 
+  // Previously: pillar picked here was never actually passed into TierEngine, which instead
+  // silently read event?.pillar (a different, often-stale source). And "HYBRID" fell through
+  // to the same branch as P1/P2/P3 — it never reached AdvisoryEngine at all. Both fixed below.
   const handleStartEngine = () => {
     if (!pillar) return;
-    if (pillar === "P4") setEngineStep("advisory");
-    else setEngineStep("tier");
+    setHybridExecutionResult(null);
+    if (pillar === "P4") {
+      setHybridGroupId(null);
+      setEngineStep("advisory");
+    } else if (pillar === "HYBRID") {
+      setHybridGroupId(makeHybridGroupId());
+      setEngineStep("tier"); // execution component runs first; Advisory follows once it's logged
+    } else {
+      setHybridGroupId(null);
+      setEngineStep("tier");
+    }
   };
 
   const handleReset = () => {
     setSelectedEvent(null);
     setPillar(null);
+    setHybridExecutionPillar("P1");
+    setHybridGroupId(null);
+    setHybridExecutionResult(null);
     setEngineStep("select");
   };
 
@@ -116,6 +142,13 @@ export default function Pricing() {
       setTab("Pricing Log");
       handleReset();
     }
+  };
+
+  // Called by TierEngine when it finishes logging the execution component of a Hybrid
+  // engagement. Hands the real, already-logged result straight into AdvisoryEngine.
+  const handleHybridTierComplete = (result) => {
+    setHybridExecutionResult(result);
+    setEngineStep("advisory");
   };
 
   return (
@@ -171,6 +204,8 @@ export default function Pricing() {
               event={selectedEvent}
               pillar={pillar}
               setPillar={setPillar}
+              hybridExecutionPillar={hybridExecutionPillar}
+              setHybridExecutionPillar={setHybridExecutionPillar}
               onStart={handleStartEngine}
               onBack={handleReset}
             />
@@ -180,6 +215,10 @@ export default function Pricing() {
               event={selectedEvent}
               operator={activeUser}
               pipelineId={pipelineId}
+              initialPillar={pillar === "HYBRID" ? hybridExecutionPillar : pillar}
+              hybridMode={pillar === "HYBRID"}
+              hybridGroupId={hybridGroupId}
+              onHybridComplete={handleHybridTierComplete}
               onComplete={handleComplete}
               onBack={() => setEngineStep("configure")}
             />
@@ -189,6 +228,8 @@ export default function Pricing() {
               event={selectedEvent}
               operator={activeUser}
               pipelineId={pipelineId}
+              hybridExecutionResult={hybridExecutionResult}
+              hybridGroupId={hybridGroupId}
               onComplete={handleComplete}
               onBack={() => setEngineStep("configure")}
             />
@@ -297,7 +338,7 @@ const PILLARS = [
   { id: "HYBRID", label: "Hybrid", sub: "Pillar 4 + Execution", desc: "Advisory retainer combined with execution or training. Runs both engines." },
 ];
 
-function PillarConfigurator({ event, pillar, setPillar, onStart, onBack }) {
+function PillarConfigurator({ event, pillar, setPillar, hybridExecutionPillar, setHybridExecutionPillar, onStart, onBack }) {
   return (
     <div>
       <button onClick={onBack} style={backBtnStyle}>← Back to event selection</button>
@@ -353,7 +394,29 @@ function PillarConfigurator({ event, pillar, setPillar, onStart, onBack }) {
         ))}
       </div>
 
-      {pillar === "P4" || pillar === "HYBRID" ? (
+      {pillar === "HYBRID" && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: theme.onSurface + "80", marginBottom: 8 }}>
+            Execution Component (paired with the Pillar 4 retainer)
+          </div>
+          <select value={hybridExecutionPillar} onChange={e => setHybridExecutionPillar(e.target.value)}
+            style={{
+              width: "100%", padding: "9px 12px", borderRadius: 8,
+              border: `1px solid ${theme.primaryDark}`, background: theme.surface,
+              color: theme.onSurface, fontSize: 13, fontFamily: "'DM Sans', sans-serif",
+              boxSizing: "border-box",
+            }}>
+            <option value="P1">Pillar 1 — Event Execution</option>
+            <option value="P2">Pillar 2 — Leadership Training</option>
+            <option value="P3">Pillar 3 — Co-Execution</option>
+          </select>
+          <div style={{ fontSize: 11, color: theme.onSurface + "50", marginTop: 6 }}>
+            You'll run the Tier Engine for this pillar first, then continue straight to the Advisory Engine with that pricing already attached.
+          </div>
+        </div>
+      )}
+
+      {(pillar === "P4" || pillar === "HYBRID") ? (
         <div style={{
           padding: "12px 16px", borderRadius: 8, marginBottom: 20,
           background: theme.accent + "12", border: `1px solid ${theme.accent + "30"}`,

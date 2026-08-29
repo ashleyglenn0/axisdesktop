@@ -26,44 +26,22 @@ const FLOOR_ROLES = [
 
 const CHECKR_DASHBOARD_URL = "https://dashboard.checkr.com";
 
+// ── Rate card — hourly only, flat rates removed ───────────────────────────────
 const DEFAULT_RATE_CARD = {
   hourly: [
-    { role: "team_lead",            label: "Team Lead",            rate: 30  },
-    { role: "ops_lead",             label: "Ops Lead",             rate: 55  },
-    { role: "general_contractor",   label: "General Contractor",   rate: 22  },
-    { role: "technical_specialist", label: "Technical Specialist", rate: 28  },
-  ],
-  flat: [
-    {
-      role: "engagement_lead",
-      label: "Engagement Lead",
-      tiers: [
-        { label: "Small (< 500) — flat/event",     max: 499,    rate: 1250 },
-        { label: "Medium (500–1499) — flat/event", max: 1499,   rate: 2000 },
-        { label: "Large (1500+) — flat/day",       max: 999999, rate: 3000 },
-      ],
-    },
-    {
-      role: "founder_ops_manager",
-      label: "Founder / Ops Manager",
-      note: "Same rate as Engagement Lead at every tier. #3 (Ops Manager): Small tier = $55/hr in Ops Lead capacity. Medium = $1,000 flat/event. Large = $2,000 flat/day.",
-      tiers: [
-        { label: "Small (< 500) — flat/event",     max: 499,    rate: 1250 },
-        { label: "Medium (500–1499) — flat/event", max: 1499,   rate: 2000 },
-        { label: "Large (1500+) — flat/day",       max: 999999, rate: 3000 },
-      ],
-    },
+    { role: "general_contractor",   label: "General Contractor",   rate: 22 },
+    { role: "technical_specialist", label: "Technical Specialist", rate: 28 },
+    { role: "team_lead",            label: "Team Lead",            rate: 30 },
+    { role: "ops_lead",             label: "Ops Lead",             rate: 55 },
+    { role: "event_contractor",     label: "Event Contractor",     rate: 22 },
   ],
 };
 
-const getRateForRole = (rateCard, role, attendeeCount = 0) => {
-  const hourly = (rateCard?.hourly || DEFAULT_RATE_CARD.hourly).find(r => r.role === role);
-  if (hourly) return { type: "hourly", rate: hourly.rate, label: `$${hourly.rate}/hr` };
-  const flat = (rateCard?.flat || DEFAULT_RATE_CARD.flat).find(r => r.role === role);
-  if (flat) {
-    const tier = flat.tiers.find(t => attendeeCount <= t.max) || flat.tiers[flat.tiers.length - 1];
-    return { type: "flat", rate: tier.rate, label: tier.rate > 0 ? `$${tier.rate} flat` : "Rate TBD" };
-  }
+const getRateForRole = (rateCard, role) => {
+  if (!role) return null;
+  const hourlyRates = rateCard?.hourly || DEFAULT_RATE_CARD.hourly;
+  const match       = hourlyRates.find(r => r.role === role);
+  if (match) return { type: "hourly", rate: match.rate, label: `$${match.rate}/hr` };
   return null;
 };
 
@@ -102,7 +80,6 @@ const normPerson = (p) => ({
   priority_contractor:  p.priority_contractor || false,
   reliability_score:    p.reliability_score   || null,
   events_completed:     p.events_completed    || 0,
-  // Portal / onboarding invite
   portal_invite_sent:   p.portal_invite_sent  || false,
   portal_invite_date:   p.portal_invite_date  || null,
   volunteerProfileId:   p.volunteerProfileId  || p.uid || null,
@@ -258,7 +235,6 @@ export default function CrewPool() {
     setSaving(false);
   };
 
-  // ── Send onboarding invite via Cloud Function ─────────────────────────────
   const sendOnboardingInvite = async () => {
     if (!selected) return;
     const email = selected.display_email;
@@ -269,9 +245,9 @@ export default function CrewPool() {
     setSaving(true);
     try {
       await sendMMPortalInviteFn({
-        pipelineId:         selected.id,
-        onboardingPacketUrl: "https://drive.google.com/your-onboarding-packet-link", // replace with actual Drive link
-        deepLink:           "https://axismobile.app.link/onboard",
+        pipelineId:          selected.id,
+        onboardingPacketUrl: "https://drive.google.com/your-onboarding-packet-link",
+        deepLink:            "https://axismobile.app.link/onboard",
       });
       await updateDoc(doc(db, "talent_pool", selected.id), {
         portal_invite_sent: true,
@@ -285,11 +261,9 @@ export default function CrewPool() {
     setSaving(false);
   };
 
-  // ── handleAssign — atomic batch, volunteerProfiles sync, no volunteers writes
   const handleAssign = async () => {
     if (!selected || !assignEventId) return;
 
-    // Soft gate — advisory warning, founders/ops leads can override
     const gate = assignmentGate(selected);
     if (gate) {
       const override = window.confirm(`Warning: ${gate}\n\nDo you want to assign anyway?`);
@@ -301,10 +275,7 @@ export default function CrewPool() {
 
     const hourlyRate = parseRate(selected.display_rate);
     const hours      = parseFloat(assignHours) || 0;
-    const estPay     = selected.is_contractor && hourlyRate && hours
-      ? hourlyRate * hours
-      : null;
-
+    const estPay     = selected.is_contractor && hourlyRate && hours ? hourlyRate * hours : null;
     const benchStatus = assignBenchStatus !== "none" ? assignBenchStatus : null;
     const benchEvent  = benchStatus ? assignEventId : null;
 
@@ -352,23 +323,11 @@ export default function CrewPool() {
       assigned_at:         serverTimestamp(),
     };
 
-    // Use writeBatch — all writes succeed or all fail
     const batch = writeBatch(db);
 
-    // talent_pool assignment subcollection
-    batch.set(
-      doc(db, "talent_pool", selected.id, "assignments", assignEventId),
-      assignmentPayload
-    );
+    batch.set(doc(db, "talent_pool", selected.id, "assignments", assignEventId), assignmentPayload);
+    batch.set(doc(db, "events", assignEventId, "roster", selected.id), rosterPayload);
 
-    // events roster
-    batch.set(
-      doc(db, "events", assignEventId, "roster", selected.id),
-      rosterPayload
-    );
-
-    // volunteerProfiles sync by uid — ONLY if uid exists (app access granted)
-    // NEVER writes to volunteers collection
     const uid = selected.uid || selected.volunteerProfileId || null;
     if (uid) {
       batch.set(
@@ -384,11 +343,10 @@ export default function CrewPool() {
           lastUpdatedBy:  activeUser,
           lastUpdatedAt:  serverTimestamp(),
         },
-        { merge: true } // merge so we don't overwrite existing profile data
+        { merge: true }
       );
     }
 
-    // talent_pool root — update last assigned
     batch.update(doc(db, "talent_pool", selected.id), {
       last_assigned_event: assignEventId,
       last_assigned_at:    serverTimestamp(),
@@ -492,7 +450,7 @@ export default function CrewPool() {
     <div style={{ display: "flex", height: "100vh", overflow: "hidden", fontFamily: "'DM Sans', sans-serif" }}>
       <style>{"@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;700&family=DM+Sans:opsz,wght@9..40,400;9..40,600;9..40,700&display=swap');"}</style>
 
-      {/* ── List panel ──────────────────────────────────────────────────────── */}
+      {/* ── List panel ── */}
       <div style={{ width: 290, borderRight: `1px solid ${theme.border}`, display: "flex", flexDirection: "column", background: theme.surface, flexShrink: 0 }}>
         <div style={{ padding: "20px 14px 12px", borderBottom: `1px solid ${theme.border}` }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -512,7 +470,6 @@ export default function CrewPool() {
             ))}
           </div>
         </div>
-
         <div style={{ flex: 1, overflowY: "auto" }}>
           {filtered.length === 0
             ? <EmptyState icon="◎" title="No people found" />
@@ -545,7 +502,7 @@ export default function CrewPool() {
         </div>
       </div>
 
-      {/* ── Rate Card panel ─────────────────────────────────────────────────── */}
+      {/* ── Rate Card panel ── */}
       {showRateCard && (
         <div style={{ width: 320, borderRight: `1px solid ${theme.border}`, background: "#fff", overflowY: "auto", padding: "20px 16px", flexShrink: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -573,33 +530,13 @@ export default function CrewPool() {
               ) : <span style={{ fontSize: 13, fontWeight: 700, color: theme.primary }}>${r.rate}/hr</span>}
             </div>
           ))}
-          <div style={{ fontSize: 10, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.1em", marginTop: 16, marginBottom: 8 }}>Flat Rate — Tiered by Event Size</div>
-          {(editingRates ? rateCardDraft : rateCard).flat?.map((r, ri) => (
-            <div key={r.role} style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: theme.text, marginBottom: 4 }}>{r.label}</div>
-              {r.note && <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 6, fontStyle: "italic" }}>{r.note}</div>}
-              {r.tiers.map((t, ti) => (
-                <div key={t.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0 6px 10px", borderBottom: `1px solid ${theme.border}` }}>
-                  <div style={{ fontSize: 12, color: theme.textMuted }}>{t.label}</div>
-                  {editingRates ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      <span style={{ fontSize: 12, color: theme.textMuted }}>$</span>
-                      <input type="number" value={rateCardDraft.flat[ri].tiers[ti].rate}
-                        onChange={e => { const d = JSON.parse(JSON.stringify(rateCardDraft)); d.flat[ri].tiers[ti].rate = parseFloat(e.target.value) || 0; setRateCardDraft(d); }}
-                        style={{ width: 70, padding: "4px 6px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, fontFamily: "'DM Sans', sans-serif", outline: "none", textAlign: "right" }} />
-                    </div>
-                  ) : <span style={{ fontSize: 12, fontWeight: 700, color: t.rate > 0 ? theme.primary : theme.textMuted }}>{t.rate > 0 ? `$${t.rate.toLocaleString()}` : "TBD"}</span>}
-                </div>
-              ))}
-            </div>
-          ))}
           <div style={{ marginTop: 16, padding: "10px 12px", borderRadius: 8, background: theme.background, border: `1px solid ${theme.border}`, fontSize: 11, color: theme.textMuted, lineHeight: 1.6 }}>
-            Volunteers are unpaid. Founder flat rates are per event (Small/Medium) or per day (Large).
+            Volunteers are unpaid. All contractor rates are hourly.
           </div>
         </div>
       )}
 
-      {/* ── Detail panel ─────────────────────────────────────────────────────── */}
+      {/* ── Detail panel ── */}
       <div style={{ flex: 1, overflowY: "auto", padding: "26px 28px", background: theme.background }}>
         {!selected ? (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
@@ -625,13 +562,11 @@ export default function CrewPool() {
                   </div>
                   <div style={{ fontSize: 13, color: theme.textMuted }}>{selected.display_email} · {selected.display_phone} · {selected.display_city}</div>
                 </div>
-                {/* Soft gate — button always enabled, warning shown below */}
                 <Button onClick={() => setShowAssign(v => !v)} style={{ flexShrink: 0 }}>
                   {showAssign ? "Cancel" : "+ Assign to Event"}
                 </Button>
               </div>
 
-              {/* Soft gate warning — advisory only, not a hard block */}
               {gateMsg && (
                 <div style={{ padding: "10px 14px", borderRadius: 8, background: theme.warningSoft, border: `1px solid rgba(224,123,42,0.3)`, fontSize: 13, color: theme.warning, marginBottom: 18, display: "flex", gap: 8 }}>
                   ⚠ {gateMsg} — founders can still assign with confirmation.
@@ -673,8 +608,6 @@ export default function CrewPool() {
                       <input value={assignNote} onChange={e => setAssignNote(e.target.value)} placeholder="Any notes…"
                         style={{ width: "100%", padding: "9px 10px", borderRadius: 8, border: `1.5px solid ${theme.border}`, fontSize: 13, fontFamily: "'DM Sans', sans-serif", background: theme.offWhite, color: theme.text, outline: "none", boxSizing: "border-box" }} />
                     </div>
-
-                    {/* Engagement Type */}
                     <div style={{ gridColumn: "1 / -1" }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Engagement Type</div>
                       <div style={{ display: "flex", gap: 8 }}>
@@ -686,13 +619,9 @@ export default function CrewPool() {
                         ))}
                       </div>
                     </div>
-
-                    {/* Bench Status */}
                     <div style={{ gridColumn: "1 / -1" }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>Pre-Assign Bench Status</div>
-                      <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 8 }}>
-                        On-Deck: First to be released if gaps appear. Reserve: Standby backup, released only if On-Deck can't cover.
-                      </div>
+                      <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 8 }}>On-Deck: First to be released if gaps appear. Reserve: Standby backup, released only if On-Deck can't cover.</div>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         {[
                           { value: "none",    label: "None (standard)" },
@@ -702,9 +631,7 @@ export default function CrewPool() {
                           <button key={opt.value} onClick={() => setAssignBenchStatus(opt.value)}
                             style={{
                               padding: "7px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
-                              background: assignBenchStatus === opt.value
-                                ? (opt.value === "on_deck" ? theme.primary : opt.value === "reserve" ? "#E07B2A" : theme.border)
-                                : "transparent",
+                              background: assignBenchStatus === opt.value ? (opt.value === "on_deck" ? theme.primary : opt.value === "reserve" ? "#E07B2A" : theme.border) : "transparent",
                               color: assignBenchStatus === opt.value ? "#fff" : theme.textMuted,
                               border: `1.5px solid ${assignBenchStatus === opt.value ? (opt.value === "on_deck" ? theme.primary : opt.value === "reserve" ? "#E07B2A" : theme.border) : theme.border}`,
                             }}>
@@ -758,41 +685,29 @@ export default function CrewPool() {
                 </Card>
               )}
 
-              {/* ── App Access / Onboarding Invite ──────────────────────────── */}
+              {/* App Access */}
               <Card style={{ marginBottom: 20 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>App Access</div>
                 {selected.portal_invite_sent ? (
                   <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: "rgba(45,122,70,0.1)", color: "#2d7a46" }}>✓ Invite Sent</span>
-                    {selected.portal_invite_date && (
-                      <span style={{ fontSize: 11, color: theme.textMuted }}>
-                        {new Date(selected.portal_invite_date).toLocaleDateString()}
-                      </span>
-                    )}
-                    <button onClick={sendOnboardingInvite} disabled={saving} style={{ fontSize: 11, color: theme.primary, background: "none", border: "none", cursor: "pointer", fontWeight: 700, fontFamily: "'DM Sans', sans-serif", padding: 0 }}>
-                      Resend
-                    </button>
+                    {selected.portal_invite_date && <span style={{ fontSize: 11, color: theme.textMuted }}>{new Date(selected.portal_invite_date).toLocaleDateString()}</span>}
+                    <button onClick={sendOnboardingInvite} disabled={saving} style={{ fontSize: 11, color: theme.primary, background: "none", border: "none", cursor: "pointer", fontWeight: 700, fontFamily: "'DM Sans', sans-serif", padding: 0 }}>Resend</button>
                   </div>
                 ) : (
                   <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                     <Button size="sm" onClick={sendOnboardingInvite} disabled={saving || !selected.display_email || selected.display_email === "—"}>
                       {saving ? "Sending…" : "Send Onboarding Invite →"}
                     </Button>
-                    <span style={{ fontSize: 11, color: theme.textMuted }}>
-                      {selected.display_email && selected.display_email !== "—"
-                        ? `Will send to ${selected.display_email}`
-                        : "No email on record"}
-                    </span>
+                    <span style={{ fontSize: 11, color: theme.textMuted }}>{selected.display_email && selected.display_email !== "—" ? `Will send to ${selected.display_email}` : "No email on record"}</span>
                   </div>
                 )}
                 <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 8 }}>
-                  {selected.is_contractor
-                    ? "Contractor will see IC Agreement + onboarding packet in Axis Mobile."
-                    : "Volunteer will see onboarding packet only in Axis Mobile."}
+                  {selected.is_contractor ? "Contractor will see IC Agreement + onboarding packet in Axis Mobile." : "Volunteer will see onboarding packet only in Axis Mobile."}
                 </div>
               </Card>
 
-              {/* ── Contractor Type ──────────────────────────────────────────── */}
+              {/* Contractor Type */}
               <Card style={{ marginBottom: 20 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Engagement Type</div>
@@ -809,18 +724,14 @@ export default function CrewPool() {
                   </div>
                 ) : (
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: theme.text }}>
-                      {CONTRACTOR_TYPES.find(t => t.value === selected.contractor_type)?.label || "Event Contractor"}
-                    </span>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: theme.text }}>{CONTRACTOR_TYPES.find(t => t.value === selected.contractor_type)?.label || "Event Contractor"}</span>
                     {selected.contractor_type === "mm_staff" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(15,52,96,0.1)", color: "#0F3460" }}>M&M Internal</span>}
                     {selected.priority_contractor && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(235,199,100,0.2)", color: "#8a6800" }}>⭐ Priority Placement</span>}
                   </div>
                 )}
-                {selected.contractor_type === "mm_staff" && <div style={{ marginTop: 8, fontSize: 12, color: theme.textMuted }}>M&M covers background check cost for all staff.</div>}
-                {selected.contractor_type === "event_contractor" && !selected.priority_contractor && <div style={{ marginTop: 8, fontSize: 12, color: theme.textMuted }}>Volunteers who complete a self-paid background check unlock <strong>priority placement</strong> on paid engagements.</div>}
               </Card>
 
-              {/* ── Background Check ─────────────────────────────────────────── */}
+              {/* Background Check */}
               <Card style={{ marginBottom: 20 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Background Check</div>
@@ -831,8 +742,7 @@ export default function CrewPool() {
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                       <div>
                         <div style={{ fontSize: 11, color: theme.textMuted, fontWeight: 600, marginBottom: 4 }}>Result</div>
-                        <select value={bgStatus} onChange={e => setBgStatus(e.target.value)}
-                          style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: `1.5px solid ${theme.border}`, fontSize: 13, fontFamily: "'DM Sans', sans-serif", outline: "none" }}>
+                        <select value={bgStatus} onChange={e => setBgStatus(e.target.value)} style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: `1.5px solid ${theme.border}`, fontSize: 13, fontFamily: "'DM Sans', sans-serif", outline: "none" }}>
                           <option value="not_started">Not Started</option>
                           <option value="pending">Pending</option>
                           <option value="cleared">Cleared (Pass)</option>
@@ -841,8 +751,7 @@ export default function CrewPool() {
                       </div>
                       <div>
                         <div style={{ fontSize: 11, color: theme.textMuted, fontWeight: 600, marginBottom: 4 }}>Date Cleared</div>
-                        <input type="date" value={bgDate} onChange={e => setBgDate(e.target.value)}
-                          style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: `1.5px solid ${theme.border}`, fontSize: 13, fontFamily: "'DM Sans', sans-serif", outline: "none", boxSizing: "border-box" }} />
+                        <input type="date" value={bgDate} onChange={e => setBgDate(e.target.value)} style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: `1.5px solid ${theme.border}`, fontSize: 13, fontFamily: "'DM Sans', sans-serif", outline: "none", boxSizing: "border-box" }} />
                       </div>
                     </div>
                     {selected.contractor_type === "event_contractor" && <div style={{ fontSize: 12, color: theme.textMuted, padding: "6px 10px", borderRadius: 6, background: theme.background, border: `1px solid ${theme.border}` }}>💳 M&M pays Checkr. Contractor reimburses $29 via Gusto deduction after first shift.</div>}
@@ -903,7 +812,7 @@ export default function CrewPool() {
                 )}
               </Card>
 
-              {/* ── ICA / Agreement ──────────────────────────────────────────── */}
+              {/* ICA */}
               {selected.is_contractor && (
                 <Card style={{ marginBottom: 20 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -928,16 +837,16 @@ export default function CrewPool() {
                 </Card>
               )}
 
-              {/* ── Onboarding Checklist ──────────────────────────────────────── */}
+              {/* Onboarding Checklist */}
               <Card style={{ marginBottom: 20 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 14 }}>Onboarding Checklist</div>
                 {[
                   { key: "onboarding_complete", label: "Onboarding Packet Acknowledged", required: false },
                   { key: "axis_trained",         label: "Axis Trained",                  required: false },
-                ].map(({ key, label, required }) => (
+                ].map(({ key, label }) => (
                   <div key={key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${theme.border}` }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <div style={{ width: 20, height: 20, borderRadius: 6, flexShrink: 0, background: selected[key] ? theme.secondary : "transparent", border: `2px solid ${selected[key] ? theme.secondary : required ? theme.warning : theme.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <div style={{ width: 20, height: 20, borderRadius: 6, flexShrink: 0, background: selected[key] ? theme.secondary : "transparent", border: `2px solid ${selected[key] ? theme.secondary : theme.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         {selected[key] && <span style={{ color: "#fff", fontSize: 11 }}>✓</span>}
                       </div>
                       <span style={{ fontSize: 14, color: selected[key] ? theme.text : theme.textMuted, fontWeight: selected[key] ? 600 : 400 }}>{label}</span>
@@ -947,7 +856,7 @@ export default function CrewPool() {
                 ))}
               </Card>
 
-              {/* ── Profile ───────────────────────────────────────────────────── */}
+              {/* Profile */}
               <Card>
                 <div style={{ fontSize: 12, fontWeight: 700, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 14 }}>Profile</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
@@ -957,7 +866,7 @@ export default function CrewPool() {
                     ["Availability",   selected.display_availability],
                     ["Interests",      selected.display_interests],
                     ["Requested Rate", selected.display_rate],
-                    ["M&M Rate",       (() => { const r = getRateForRole(rateCard, selected.floor_role || selected.display_type); return r ? r.label : "See rate card"; })()],
+                    ["M&M Rate",       (() => { const r = getRateForRole(rateCard, selected.contractor_type); return r ? r.label : "See rate card"; })()],
                     ["Entity Type",    selected.display_entity],
                     ["Location",       selected.display_city],
                     ["Instagram",      selected.display_instagram],

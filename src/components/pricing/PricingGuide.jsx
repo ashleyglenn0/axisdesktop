@@ -70,13 +70,13 @@ export const GUIDES = {
   // Tier Engine
   intake: (
     <Guide type="info" title="Intake" collapsible>
-      Attendee count drives tier selection — this is the most important number you enter. Tier 0 (≤175) is M&M staff only, still quoted but lower floor. Tier 1 (176–299) is a standard small engagement. Tier 2 (300–599) is mid-size. Tier 3 (600+) is large or enterprise. If the client hasn't confirmed attendance yet, use the discovery call estimate and flag it in notes. Do not guess — an under-counted attendance number produces an under-priced proposal. Location surfaces government/civic and public safety escalator flags downstream.
+      Attendee count drives tier selection — this is the most important number you enter. Tier 0 (≤175) is M&M staff only, still quoted but lower floor. Tier 1 (176–299) is a standard small engagement. Tier 2 (300–599) is mid-size. Tier 3 (600+) is large or enterprise. If the client hasn't confirmed attendance yet, use the discovery call estimate and flag it in notes. Do not guess — an under-counted attendance number produces an under-priced proposal. Note: escalators (government, public safety, timeline) are <strong>not</strong> auto-detected from Location — you'll flag those yourself in Add-Ons & Escalators based on what you actually know about the event.
     </Guide>
   ),
 
   introductory: (
     <Guide type="tip" title="Introductory pricing">
-      If a client can't meet the tier floor and M&M has a strategic reason to engage anyway, introductory pricing is available as a Founder-authorized discount — not a floor override. The floor stays. The discount brings the final price down. This requires a strategic discount authorization (≤15%, Founder only) with documented rationale. Never quote below floor without going through the discount flow.
+      Introductory Pricing is a standing pre-launch program with its own toggle in Final Summary — it's not a type of discount. The suggested rate (15–20%) scales down as tier size goes up, with a bonus for packaged/bundled add-ons, capped at 20%. It auto-disables once M&M has onboarded its first 10 real clients, tracked live from the Pricing Log — you'll see the countdown right on the toggle. It can't be combined with a Standard/Ops/Founder discount on the same quote; turn it off if this engagement needs one of those instead.
     </Guide>
   ),
 
@@ -100,7 +100,7 @@ export const GUIDES = {
 
   tier: (
     <Guide type="rule" title="Tier override — Founder authorization required" collapsible>
-      The auto-selected tier is based on volunteer count. Override only when the auto-selected tier genuinely misrepresents the scope — not to get a number the client prefers. Every override is permanently logged with your name and rationale. If the price seems too high, adjust scope or run a discount — don't override the tier.
+      The auto-selected tier is based on attendee count. Override only when the auto-selected tier genuinely misrepresents the scope — not to get a number the client prefers. Every override is permanently logged with your name and rationale. If the price seems too high, adjust scope or run a discount — don't override the tier. <strong>Complexity Factors on this same screen actually move the price</strong> — check every box that genuinely applies (multi-zone, VIP presence, tight timeline, etc.) before moving on. Skipping this step under-prices real complexity.
     </Guide>
   ),
 
@@ -112,13 +112,13 @@ export const GUIDES = {
 
   addons: (
     <Guide type="info" title="Add-ons and escalators" collapsible>
-      Add-ons are scoped services — only select what's actually in scope. Escalators apply automatically for government, public safety, and timeline conditions — check that the auto-flags match the engagement. Remember: escalators <strong>compound</strong>. 1.20× × 1.20× = 1.44×, not 1.40×.
+      Add-ons are scoped services — only select what's actually in scope. Escalators are <strong>not</strong> auto-flagged — you select each one yourself based on what you know about the engagement (government/civic presence, public safety needs, timeline compression). Don't skip this step assuming the system caught it for you. Remember: escalators <strong>compound</strong>. 1.20× × 1.20× = 1.44×, not 1.40×.
     </Guide>
   ),
 
   summary: (
     <Guide type="rule" title="Before you submit">
-      Floor Check and Discount Check must both show OK. If Floor Check fails, fix the scope — the floor is not negotiable. If you applied a discount, the authorizing Founder's name is required. Once submitted, this run is permanently logged and cannot be edited.
+      Floor Check and Discount Check must both show OK. If Floor Check fails, fix the scope — the floor is not negotiable. Any discount — Ops Discretion, single Founder, or dual Founder — requires an authorizing name (or two, for dual) <strong>and</strong> a written reason: a name proves who approved it, a reason proves why. Once submitted, this run is permanently logged and cannot be edited.
     </Guide>
   ),
 
@@ -137,13 +137,13 @@ export const GUIDES = {
 
   retainerBand: (
     <Guide type="warn" title="Band selection" collapsible>
-      The recommended band is driven by the CIMI score. Override only if the scope conversation revealed something the score doesn't capture — for example, a client who scores Maturing but is about to scale 3× and needs Band 4 support. Document your reasoning in notes. Never select a lower band to make the price more attractive — that's how M&M undersells advisory work.
+      The recommended band is driven by the CIMI score. Override only if the scope conversation revealed something the score doesn't capture — for example, a client who scores Maturing but is about to scale 3× and needs Band 4 support. There's no formal override flow here like Tier Engine's — picking a different band is just a click — so use real judgment and be ready to explain it if asked. Never select a lower band to make the price more attractive — that's how M&M undersells advisory work.
     </Guide>
   ),
 
   hybrid: (
     <Guide type="rule" title="Hybrid pricing — two independent line items" collapsible>
-      Advisory retainer and execution pricing are never blended, never discounted against each other, and never presented as a combined total without both components broken out. They are two independent engagements running simultaneously. The client is buying both — price both at full value.
+      Advisory retainer and execution pricing are never blended, never discounted against each other, and never presented as a combined total without both components broken out. They are two independent engagements running simultaneously. The client is buying both — price both at full value. Execution pricing for a Hybrid engagement is pulled automatically from a completed Tier Engine run — there's no way to type it in manually here.
     </Guide>
   ),
 

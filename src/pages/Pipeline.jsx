@@ -349,7 +349,7 @@ function StageProgress({ currentStage }) {
 export default function Pipeline() {
   const { activeUser } = useAuth();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const justPriced  = searchParams.get("priced") === "1";
   const highlightId = searchParams.get("highlight");
 
@@ -381,7 +381,17 @@ export default function Pipeline() {
   useEffect(() => {
     if (highlightId && items.length > 0) {
       const match = items.find(i => i.id === highlightId);
-      if (match) handleSelect(match);
+      if (match) {
+        handleSelect(match);
+        // Clear the highlight param once used. Without this, every subsequent load()
+        // (which runs after every save/reject/activation-send and creates a NEW items
+        // array reference) re-triggers this effect and calls handleSelect again — which
+        // resets formData back to the last-saved stage_data, silently discarding any
+        // edits made since. That's the "can't type, it keeps resetting" symptom.
+        const next = new URLSearchParams(searchParams);
+        next.delete("highlight");
+        setSearchParams(next, { replace: true });
+      }
     }
   }, [highlightId, items]);
 
@@ -611,16 +621,25 @@ export default function Pipeline() {
           </div>
         );
 
-      case "discovery_complete":
+      case "discovery_complete": {
+        // Previously required pricing_tier + pricing_confirmed_price specifically —
+        // Tier Engine fields only. A pure P4 engagement never sets those (it confirms
+        // pricing_retainer_band + pricing_monthly_rate instead), so this would have
+        // permanently blocked any P4-only lead from ever advancing past this stage.
+        // Now accepts either confirmation as valid — execution, retainer, or both.
+        const executionConfirmed = !!formData.pricing_tier && !!formData.pricing_confirmed_price;
+        const retainerConfirmed  = !!formData.pricing_retainer_band && !!formData.pricing_monthly_rate;
+        const pricingConfirmed   = executionConfirmed || retainerConfirmed;
         return (
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
             {rejectBtn}{saveBtn}
             <Button onClick={() => advanceStage("pricing_approved")}
-              disabled={saving || !formData.pricing_tier || !formData.pricing_confirmed_price}>
+              disabled={saving || !pricingConfirmed}>
               Confirm Pricing → Approve
             </Button>
           </div>
         );
+      }
 
       // ── PROPOSAL STAGE — refactored ─────────────────────────────────────
       case "pricing_approved": {

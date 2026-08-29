@@ -436,7 +436,7 @@ exports.mmDocuSealWebhook = onRequest(async (req, res) => {
       const signedDocUrl  = submission.documents?.[0]?.url || null;
 
       if (docType === 'ic_agreement' && contractorUid) {
-        const snap = await db.collection('volunteerProfiles').where('uid', '==', contractorUid).limit(1).get();
+        const snap = await db.collection('talent_pool').where('uid', '==', contractorUid).limit(1).get();
         if (!snap.empty) {
           await snap.docs[0].ref.update({
             ic_agreement_signed:    true,
